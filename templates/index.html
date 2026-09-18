@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Shore Lead Finder</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div id="toast" class="toast hidden"></div>
+<header>
+    <h1>Shore Lead Finder</h1>
+    <p class="subtitle">Google Maps Leadsuche · Konkurrenzsystem-Erkennung · Neu-Eröffnungen · DB wächst mit jedem Sync</p>
+</header>
+
+<section id="api-key-box" class="card {% if has_env_key %}hidden{% endif %}">
+    <label>Google API-Key (wird nur für diese Browser-Session lokal gehalten, nicht gespeichert):</label>
+    <input type="password" id="apiKeyInput" placeholder="AIza...">
+    <p class="hint">Alternativ als Umgebungsvariable GOOGLE_MAPS_API_KEY vor dem Start setzen, dann erscheint diese Box nicht.</p>
+</section>
+
+<section class="card">
+    <details class="log-box">
+        <summary>
+            📋 Aktivitäts-Log <span id="logCount"></span> (aufklappen)
+            <div id="logLatest" class="log-latest"></div>
+        </summary>
+        <div id="logBody" class="log-list"></div>
+    </details>
+</section>
+
+<section class="card">
+    <h2>Suche</h2>
+    <div class="search-row">
+        <div class="field">
+            <label for="region">Region / Stadt / Bezirk / PLZ (mehrere mit Komma trennen)</label>
+            <input type="text" id="region" placeholder="z.B. Berlin, München, Wien, Zürich">
+        </div>
+        <div class="field small">
+            <label for="radiusSelect">Umkreis</label>
+            <select id="radiusSelect">
+                <option value="0">0 km (ganzes Gebiet)</option>
+                <option value="5">5 km</option>
+                <option value="15">15 km</option>
+                <option value="50">50 km (Google-Maximum)</option>
+                <option value="custom">eigener Wert ...</option>
+            </select>
+            <input type="number" id="radiusCustom" class="hidden" placeholder="km (max. 50)" min="0" max="50" step="1">
+        </div>
+        <div class="field">
+            <label for="category">Kategorie</label>
+            <input type="text" id="category" list="categoryList" placeholder="z.B. Friseur">
+            <datalist id="categoryList">
+                {% for c in categories %}
+                <option value="{{ c }}">
+                {% endfor %}
+            </datalist>
+        </div>
+        <div class="field small">
+            <label for="count">Anzahl</label>
+            <input type="number" id="count" value="20" min="1" max="60">
+        </div>
+        <div class="field button-field">
+            <button id="searchBtn">Suchen</button>
+        </div>
+    </div>
+    <div class="search-row">
+        <button id="syncBtn" class="secondary">🔄 Sync (alle gespeicherten Suchen neu prüfen)</button>
+        <span id="statusMsg"></span>
+    </div>
+</section>
+
+<section class="card">
+    <details class="log-box">
+        <summary>🧹 Aufräumen (aufklappen)</summary>
+        <div class="search-row">
+            <div class="field">
+                <label for="hideBeforeDate">Alle bereits bearbeiteten Leads ausblenden (z.B. schon in HubSpot)</label>
+                <input type="date" id="hideBeforeDate">
+            </div>
+            <div class="field button-field">
+                <button id="hideBeforeBtn" class="secondary">Bis zu diesem Datum ausblenden</button>
+            </div>
+        </div>
+        <p class="hint">Blendet alle Leads aus, die an oder vor diesem Datum zuerst gefunden wurden ("In DB seit").
+            Nützlich, um deinen aktuellen HubSpot-Stand einmalig aus der Liste zu entfernen.</p>
+    </details>
+</section>
+
+<section class="card">
+    <details class="table-section" open>
+        <summary><h2>🆕 Neu <span id="neuCount"></span></h2></summary>
+        <input type="text" class="table-search" id="neuSearch" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
+        <div class="table-wrap">
+            <table class="leads-table" id="neuTable">
+                <thead>
+                    <tr>
+                        <th>Name</th><th>Adresse</th><th>Telefon</th><th>Website</th><th>Google Profil</th>
+                        <th>ICP-Score (%)</th><th>Tier</th><th>System</th><th># Reviews</th><th>Offen</th>
+                        <th>Eröffnung</th><th>Kette?</th><th>Pain-Points</th><th>Status</th><th>Notiz</th>
+                        <th>In DB seit</th><th>HubSpot</th>
+                    </tr>
+                </thead>
+                <tbody id="neuBody"></tbody>
+            </table>
+        </div>
+    </details>
+</section>
+
+<section class="card">
+    <details class="table-section" open>
+    <summary><h2>📁 Alt <span id="leadCount"></span></h2></summary>
+    <div class="table-toolbar">
+        <div class="toolbar-controls">
+            <label>Sortieren:
+                <select id="sortSelect">
+                    <option value="icp_score">ICP-Score</option>
+                    <option value="rating_count">Bewertungsanzahl</option>
+                    <option value="name">Name</option>
+                    <option value="first_seen">Zuerst gefunden</option>
+                </select>
+            </label>
+            <button id="sortDirBtn" class="secondary" title="Sortierrichtung umschalten">⬇ absteigend</button>
+            <button id="exportCsv">Export CSV</button>
+            <button id="exportXlsx">Export Excel</button>
+            <button id="exportHubspot">Export HubSpot</button>
+        </div>
+    </div>
+    <input type="text" class="table-search" id="altSearch" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
+    <p class="hint">Spaltenfilter direkt in der Tabellen-Kopfzeile (zweite Zeile) — funktioniert in allen drei Tabellen.</p>
+    <details class="info-box">
+        <summary>ℹ️ Was bedeuten ICP-Score, Tier-Farbe & Eröffnung? (aufklappen)</summary>
+        <div class="info-box-content">
+            <p><strong>ICP-Score (0–100 %):</strong> Anruf-Priorität. 100 % = perfekter Fit, sofort anrufen.
+                0 % = ignorieren. Höher ist immer besser.</p>
+            <p><strong>Tier-Farbe:</strong>
+                <span class="legend-item"><span class="legend-swatch tier-A"></span> A/Grün = heiß (≥65 %)</span>
+                <span class="legend-item"><span class="legend-swatch tier-B"></span> B/Gelb = mittel (40–64 %)</span>
+                <span class="legend-item"><span class="legend-swatch tier-C"></span> C/Rot = niedrig (&lt;40 %)</span>
+            </p>
+            <p><strong>Spalte "Eröffnung":</strong>
+                <em>Bald eröffnend</em> = eröffnet erst noch, hat garantiert kein Buchungssystem (+20 Punkte) ·
+                <em>Neu eröffnet</em> = aktiv, aber unter 5 Bewertungen, vermutlich frisch (+15 Punkte, Schätzung) ·
+                <em>Etabliert</em> = alles andere, kein Bonus.</p>
+            <p><strong>"In DB seit":</strong> Datum, an dem dieses Tool den Laden zuerst gefunden hat — nicht das
+                echte Google-Eröffnungsdatum (das gibt's über die API nicht).</p>
+        </div>
+    </details>
+    <div class="table-wrap">
+        <table id="altTable">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Adresse</th>
+                    <th>Telefon</th>
+                    <th>Website</th>
+                    <th>Google Profil</th>
+                    <th>ICP-Score (%)</th>
+                    <th>Tier</th>
+                    <th>System</th>
+                    <th># Reviews</th>
+                    <th>Offen</th>
+                    <th>Eröffnung</th>
+                    <th>Kette?</th>
+                    <th>Pain-Points</th>
+                    <th>Status</th>
+                    <th>Notiz</th>
+                    <th>In DB seit</th>
+                    <th>HubSpot</th>
+                </tr>
+            </thead>
+            <tbody id="leadsBody"></tbody>
+        </table>
+    </div>
+    </details>
+</section>
+
+<section class="card">
+    <details class="table-section">
+        <summary><h2>📤 Exportiert / In HubSpot <span id="exportedCount"></span></h2></summary>
+        <p class="hint">Leads, die exportiert wurden (automatisch) oder per "In HubSpot"-Button markiert wurden.
+            "Einblenden" schickt sie zurück nach "Alt".</p>
+        <input type="text" class="table-search" id="exportedSearch" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
+        <div class="table-wrap">
+            <table class="leads-table" id="exportedTable">
+                <thead>
+                    <tr>
+                        <th>Name</th><th>Adresse</th><th>Telefon</th><th>Website</th><th>Google Profil</th>
+                        <th>ICP-Score (%)</th><th>Tier</th><th>System</th><th># Reviews</th><th>Offen</th>
+                        <th>Eröffnung</th><th>Kette?</th><th>Pain-Points</th><th>Status</th><th>Notiz</th>
+                        <th>In DB seit</th><th>HubSpot</th>
+                    </tr>
+                </thead>
+                <tbody id="exportedBody"></tbody>
+            </table>
+        </div>
+    </details>
+</section>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
