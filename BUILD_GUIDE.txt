@@ -23,6 +23,8 @@ Inhalt
   15 Neue Datenquelle einbauen
   16 Bekannte Grenzen, Fehler und Risiken
   17 Abnahme-Checkliste
+  18 Skalierung in andere Richtungen
+  19 Auf einem anderen Rechner weiterarbeiten
 
 
 ======================================================================
@@ -663,3 +665,64 @@ Zeiten immer mit Uhrzeit und in Python erzeugen. leads.db und API-Keys nie commi
 [ ] Excel: Tier A gruen, B gelb, C rot (Fehler 4 behoben)
 [ ] Zeiten CET, Format HH:MM - TT-MM-JJJJ; Sortierung nach "Zuerst gefunden" aendert die Reihenfolge sichtbar
 [ ] Kein API-Key und keine leads.db im Repo
+
+
+======================================================================
+18. SKALIERUNG IN ANDERE RICHTUNGEN
+======================================================================
+
+Provider-Vergleich (Stichpunkte aus dem Wissen des Autors, NICHT live verifiziert; Preise, Felder und Limits vor
+dem Bau in der aktuellen Doku pruefen):
+  Google Places (New)      Key + Abrechnung. Beste Abdeckung, Oeffnungsstatus, FUTURE_OPENING. Max. 5 Reviews,
+                           max. 50 km Radius, nur Google-eigene Bewertungen.
+  OSM Overpass + Nominatim Kostenlos, kein Key. Offene Daten, Tags wie website, phone, opening_hours, teils
+                           start_date. Datenqualitaet schwankt, keine Bewertungen, Rate-Limits beachten.
+  Foursquare Places        Key, Free-Tier. Gute POI-Daten und Kategorien. Felder je Tarif unterschiedlich.
+  HERE / TomTom / Geoapify Key. Geocoding + POI-Suche, teils guenstiger. Weniger Details und Reviews.
+  Yelp Fusion              Key. Reviews vorhanden, in DACH schwach, wenige Reviews pro Aufruf.
+  Scraping-Dienste         SerpApi, Outscraper, Apify: bezahlt, liefern u. a. Maps-Daten inkl. mehr Reviews.
+                           Nutzungsbedingungen und Recht pruefen, Kosten pro Abfrage.
+  Branchenverzeichnisse    Lokale Tiefe, meist kein sauberes API.
+Empfehlung fuer "nicht Google": OSM Overpass als erster Provider (kein Key). Mehrere Provider parallel:
+Ergebnisse mergen und ueber normalisierten Namen + Adresse (oder Koordinaten-Naehe) deduplizieren.
+
+Weitere Richtungen:
+  - Andere Signale statt "Konkurrenzsystem": detect_competitor ist ein Spezialfall von "erkenne Technologie im HTML".
+    Genauso moeglich: nutzt WordPress/Shopify, hat Chat-Widget, hat Tag Manager, hat Impressum-Mail. Jeweils ein
+    Detector plus ein Gewicht im Score.
+  - Kontaktdaten anreichern: Impressum-Seite crawlen (E-Mail, Inhaber), Dienste im Stil von Hunter/Apollo als
+    zusaetzlicher Enrichment-Schritt.
+  - Grosse Laeufe: Suche/Sync in Hintergrund-Thread oder Job-Queue, Fortschritt per Polling-Route, Enrichment
+    parallelisieren (ThreadPoolExecutor, 5 bis 10 Worker, Rate-Limit pro Host). Heute laeuft alles sequenziell.
+  - Mehrere Nutzer/Team: SQLite -> Postgres, owner_id-Spalte, Login. Die Log-Tabelle bleibt strukturgleich.
+  - Automatisierung mit Agenten: taeglicher geplanter Sync mit Morgen-Digest der neuen Tier-A-Leads; Outreach-Entwurf
+    pro Lead aus den Signalen (kein Buchungssystem + Pain-Point ergibt Gespraechseinstieg); Wiedervorlage-Erinnerung
+    fuer "Kontaktiert" ohne Follow-up. Agenten duerfen lesen und entwerfen; Versand und Statusaenderung nur nach
+    menschlicher Freigabe.
+  - CRM-Anbindung statt CSV: direkter HubSpot-/Pipedrive-API-Push, hubspot_id pro Lead speichern. "Exportiert" wird
+    dann echte Sync-Information statt reines Ausblenden.
+  - Andere Branche: nur die Konstanten aus Abschnitt 3 aendern (Kategorien, Gewichte, Signaturen, Regex).
+    Beispiele fuer Signaturen: Zahnaerzte (Doctolib, Jameda, Samedi), Restaurants (OpenTable, Quandoo, TheFork),
+    Fitnessstudios (Magicline, Eversports). Gewichte an Ticketgroesse und Abschlussquote der Branche anpassen.
+  - Andere Laender: Signaturen um lokale Anbieter erweitern, Pain-Point-Regex pro Sprache, Zeitzone konfigurierbar.
+
+
+======================================================================
+19. AUF EINEM ANDEREN RECHNER WEITERARBEITEN
+======================================================================
+
+Der Code ist vollstaendig im Repo. Mitgeliefert werden NICHT: die Datenbank, der API-Key, Claude-Code-Erinnerungen
+und der Gespraechsverlauf.
+
+  1. Repo klonen. Privates Repo: vorher bei GitHub anmelden (gh auth login oder ein gespeichertes Git-Login fuer
+     den privaten Account). Dann: git clone https://github.com/HussainTayyeb/shore-leadfinder-app.git
+  2. In den Ordner wechseln, Abhaengigkeiten installieren: python3 -m pip install -r requirements.txt (Python 3.9+).
+  3. Schluessel setzen: export GOOGLE_MAPS_API_KEY="..." (oder im UI-Feld eintragen). Der Key steht nirgends im Repo.
+  4. Optional die bisherigen Daten uebernehmen: Datei leads.db vom alten Rechner in den Projektordner kopieren
+     (enthaelt Leads, gemerkte Suchen und das Aktivitaets-Log). Ohne diese Datei startet die App mit leerer
+     Datenbank; sie wird beim ersten Start automatisch angelegt.
+  5. Starten: python3 app.py -> http://127.0.0.1:5050
+  6. Claude Code im Projektordner starten und diese Anleitung (BUILD_GUIDE.txt) als Kontext nutzen. Dinge, die nur in
+     einer frueheren Sitzung besprochen wurden (z. B. Push-Ziel), muessen erneut gesagt werden.
+Hinweis: Wer den Ordner auf einem neuen Rechner nur aus dem Repo aufsetzt, hat den Code-Stand, aber keinen
+Datenbestand. Wer beides braucht, kopiert leads.db zusaetzlich (nie ins oeffentliche Repo committen).
