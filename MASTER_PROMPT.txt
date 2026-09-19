@@ -1,0 +1,125 @@
+MASTER-PROMPT FUER CLAUDE CODE: SHORE LEAD FINDER NACHBAUEN / DATENQUELLE AUSTAUSCHEN
+======================================================================================
+
+So benutzt du diese Datei
+  1. Neuen leeren Ordner anlegen, BUILD_GUIDE.txt hineinkopieren, "claude" starten.
+  2. Prompt A einfuegen (kompletter Neubau) ODER Prompt C (nur Datenquelle im bestehenden Projekt tauschen).
+  3. Bei Prompt A anschliessend die Phasen-Prompts B1 bis B8 der Reihe nach. Erst weiter, wenn die Abnahme erfuellt ist.
+  4. Platzhalter in spitzen Klammern <...> vor dem Einfuegen ersetzen.
+
+Hinweis: BUILD_GUIDE.txt ist die Quelle der Wahrheit. Die Prompts verweisen auf ihre Abschnittsnummern.
+
+
+----------------------------------------------------------------------
+PROMPT A: KOMPLETTER NEUBAU
+----------------------------------------------------------------------
+
+Lies BUILD_GUIDE.txt vollstaendig. Baue das System nach den Abschnitten 1 bis 14 in diesem Ordner nach:
+gleiche Dateien, gleiche Funktionen, gleiche Signaturen, gleiches Datenbank-Schema, gleiche Routen, gleiches
+Frontend-Verhalten (Tabellen-Switching nach Abschnitt 12, Ereignisse nach Abschnitt 13, Texte nach Abschnitt 14).
+
+Aenderungen gegenueber dem Original:
+  1. Datenquelle: Verwende NICHT Google, sondern <GEWAEHLTE QUELLE, z. B. OpenStreetMap Overpass + Nominatim>.
+     Implementiere sie als Provider nach dem Adapter-Vertrag aus Abschnitt 2 und den Schritten aus Abschnitt 15.
+     Alle Google-Stellen aus der Austausch-Tabelle (Abschnitt 2), inklusive der UI-Texte, werden angepasst.
+  2. Branchen-Konstanten aus Abschnitt 3 liegen in einer config.py (Kategorien, Gewichte, Signaturen, Regex,
+     Score-Schwellen). Ich will nur diese Datei aendern, um andere Branchen zu bedienen.
+  3. Baue die Fehler aus Abschnitt 16 NICHT nach, sondern direkt richtig:
+       - Export beruecksichtigt die aktiven Filter (Frontend schickt die sichtbaren place_ids)
+       - Namens-Sortierung: "absteigend" ergibt Z bis A
+       - requests-Fehler (Timeout, Verbindungsabbruch) werden pro Region als Teilfehler gesammelt, kein HTTP 500
+       - Excel-Farben: Tier A gruen, B gelb, C rot
+  4. Kein API-Key und keine leads.db im Repo (.gitignore). Schluessel nur aus Umgebungsvariable oder UI-Feld.
+
+Arbeitsweise: Baue in Phasen (B1 bis B8), halte nach jeder Phase an, zeige mir das Ergebnis der Abnahme-Pruefung
+und warte auf mein "weiter". Wenn dir Information fehlt (z. B. die genaue API deiner Datenquelle), frage nach,
+statt zu raten. Behaupte nichts als getestet, was du nicht ausgefuehrt hast.
+
+
+----------------------------------------------------------------------
+PHASEN-PROMPTS
+----------------------------------------------------------------------
+
+B1: DATENBANK
+  Implementiere db.py komplett nach Abschnitt 5 von BUILD_GUIDE.txt: Schema, init_db, Migration fuer BEIDE Tabellen
+  (leads UND watched_searches), upsert_leads (gibt Liste neuer IDs zurueck, ueberschreibt nie), remember_search,
+  get_watched_searches, get_all_leads(include_hidden), get_lead, update_lead, hide_leads, hide_leads_before, log_action,
+  get_logs, undo_log (mit redo_payload). Alle Zeiten Europe/Berlin, nie datetime('now') aus SQLite.
+  ABNAHME: Ein Skript fuegt Leads ein, versteckt sie, macht Undo und Redo und prueft die Zustaende per assert.
+  Ein zweiter Insert derselben place_id aendert nichts.
+
+B2: ERKENNUNG UND SCORE (REINE FUNKTIONEN)
+  Lege config.py nach Abschnitt 3 an. Implementiere detectors und scoring nach Abschnitt 4: detect_competitor,
+  detect_pain_points, detect_opening_status, format_opening_date, detect_likely_new, compute_score (Legacy-Ampel),
+  compute_icp_score, normalize_name_for_chain_check, flag_chains. Schreibe pytest-Tests, mindestens 3 Faelle je
+  Funktion, darunter: Kette mit 2 / 3 / 9 / 10 Gleichnamigen, Score-Deckel bei 100, Tier-Grenzen 64 / 65 / 39 / 40,
+  Konkurrent nur im HTML, nur in einer Review, in keinem von beiden.
+  ABNAHME: pytest ist gruen.
+
+B3: PROVIDER UND PIPELINE
+  Implementiere providers/base.py (RawPlace, Provider) nach Abschnitt 2 und providers/<name>.py fuer <GEWAEHLTE QUELLE>.
+  Normalisiere IDs (mit Prefix), Status und Felder; deklariere max_radius_km. Baue die Pipeline nach Abschnitt 11:
+  pro Region (geocode nur bei Radius), search, enrich (Reviews, Website-HTML, Signale), finalize (erst Ketten, dann
+  Score), upsert, remember_search. Teilfehler pro Region sammeln (auch requests-Fehler), Radius auf max_radius_km klemmen.
+  ABNAHME: CLI-Lauf "Berlin, Wien" / "Friseur" / 5 / 15 speichert Leads; ein zweiter Lauf fuegt 0 neue hinzu;
+  ein simulierter Timeout fuer eine Region bricht die andere nicht ab.
+
+B4: HTTP-API
+  Implementiere app.py nach Abschnitt 6: alle Routen, Logging und Undo/Redo-Verhalten, Export mit Auto-Ausblenden.
+  Keine Geschaeftslogik in den Routen. Der Export erhaelt die place_ids der sichtbaren Leads (Fehler 1 aus Abschnitt 16).
+  ABNAHME: Ein curl-Skript fuehrt aus: search, leads, PATCH hidden, logs, undo, undo vom undo, export csv, und prueft
+  nach jedem Schritt den Zustand.
+
+B5: EXPORTE
+  Implementiere exports.py nach Abschnitt 7 (CSV mit ";" und utf-8-sig, XLSX mit Faerbung A gruen / B gelb / C rot,
+  HubSpot-CSV, berechnete Felder first_seen_display und Profil-Link).
+  ABNAHME: Dateien oeffnen sich in Excel mit korrekten Umlauten, Tier-Farben stimmen mit der UI ueberein.
+
+B6: FRONTEND
+  Baue templates/index.html, static/app.js, static/style.css exakt nach den Abschnitten 8 bis 14: drei <details>-Tabellen
+  Neu / Alt / Exportiert mit den Uebergaengen aus Abschnitt 12, JS-generierte Filterzeile aus COLUMN_FILTERS,
+  Volltextsuche je Tabelle, Sortierung nur in Alt (Namens-Sortierung korrekt), Toast, Aktivitaets-Log mit Vorschau
+  und Undo-Buttons, Umkreis-Select mit Custom-Feld, Aufraeumen-Bereich, alle Ereignisse aus Abschnitt 13, alle Texte
+  aus Abschnitt 14 (Google-Texte an die neue Datenquelle anpassen). Kein Framework, kein Build-Schritt.
+  ABNAHME: (1) Ein Skript prueft, dass jede in app.js referenzierte Element-ID im HTML existiert. (2) Klammer-Balance
+  der JS-Datei stimmt. (3) Manueller Klicktest der Checkliste aus Abschnitt 17, Punkte zu Tabellen-Switching.
+
+B7: HAERTUNG
+  Ergaenze: Env-Key-Handling (UI-Feld nur ohne Env-Key), .gitignore (leads.db, __pycache__, .DS_Store), README mit
+  Startbefehl, deutsche Fehlermeldungen, Timeouts an allen Netzwerkaufrufen, kein Absturz bei fehlender Website oder
+  leerer Review-Antwort. Stelle sicher, dass Templates nach Aenderungen neu geladen werden (TEMPLATES_AUTO_RELOAD)
+  oder dokumentiere den Neustart. Tests laufen gegen eine eigene DB-Datei (DB_PATH per Umgebungsvariable), nie gegen
+  die Produktiv-DB.
+  ABNAHME: Alle Punkte der Checkliste aus Abschnitt 17 sind abgehakt oder begruendet offen.
+
+B8 (OPTIONAL): ZWEITE DATENQUELLE ODER ANDERE BRANCHE
+  Implementiere zusaetzlich providers/<zweite quelle>.py. Fuer eine andere Branche <X> aenderst du nur config.py
+  (Kategorien, Gewichte, Signaturen, Regex). Aendere sonst nichts. Wenn zwei Quellen gemischt werden, dedupliziere
+  ueber normalisierten Namen + Adresse.
+  ABNAHME: Beide Quellen liefern ueber dieselbe Pipeline Leads; keine Dubletten.
+
+
+----------------------------------------------------------------------
+PROMPT C: NUR DIE DATENQUELLE IM BESTEHENDEN PROJEKT TAUSCHEN
+----------------------------------------------------------------------
+
+(Voraussetzung: Das Projekt aus diesem Repo liegt im Ordner, BUILD_GUIDE.txt daneben.)
+
+Lies BUILD_GUIDE.txt, besonders Abschnitt 2 (Austauschpunkte und Adapter-Vertrag) und Abschnitt 15. Ersetze die
+Datenquelle Google Places durch <GEWAEHLTE QUELLE>. Aendere nur die Stellen aus der Austausch-Tabelle:
+lead_logic.py (geocode_region, search_places, get_reviews, Anfang von enrich_place), app.py (Key-Handling, Radius-Limit,
+Fehlertexte), index.html und app.js (Google-Texte, Umkreis-Optionen), exports.py und app.js (Profil-Link), SETUP.md.
+Fuehre keine anderen Umbauten durch. Zeige mir vor dem Schreiben eine Liste der geplanten Aenderungen je Datei und
+warte auf mein Ok. Danach: Abnahme mit den Punkten "Suche mit 2 Orten", "gleiche Suche zweimal ergibt 0 neue",
+"Radius wird geklemmt", "Timeout bei einer Region ergibt Teilfehler". Wenn die Quelle keine Reviews oder keinen
+Oeffnungsstatus liefert, verhalte dich nach Abschnitt 15, Punkte 6 und 7. Sichere vorher leads.db als Kopie.
+
+
+----------------------------------------------------------------------
+PROMPT D (OPTIONAL): BEKANNTE FEHLER IM BESTEHENDEN PROJEKT BEHEBEN
+----------------------------------------------------------------------
+
+Lies BUILD_GUIDE.txt, Abschnitt 16. Behebe im bestehenden Projekt die Fehler 1 bis 4:
+(1) Export nur fuer die im UI sichtbaren, gefilterten Leads; (2) Namens-Sortierung "absteigend" ergibt Z bis A;
+(3) requests-Fehler in geocode_region, search_places und get_reviews als Teilfehler pro Region sammeln statt HTTP 500;
+(4) Excel-Farben: Tier A gruen, B gelb, C rot. Zeige jeweils den Diff und pruefe jede Aenderung mit einem echten Test.

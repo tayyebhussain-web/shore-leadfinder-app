@@ -1,0 +1,665 @@
+SHORE LEAD FINDER: VOLLSTAENDIGE BAUANLEITUNG (FUNKTIONSEBENE)
+================================================================
+
+Zweck: Dieses Dokument beschreibt das komplette System so genau, dass Claude Code es nachbauen oder einzelne
+Module austauschen kann (z. B. Google-Datenquelle raus, andere Quelle rein). Es beschreibt den Stand des Codes in
+diesem Repo. Einbauhinweise fuer Claude Code: siehe MASTER_PROMPT.txt.
+
+Inhalt
+  1  Ueberblick und Dateien
+  2  Austauschpunkte (was ist Google-spezifisch) + Adapter-Vertrag
+  3  Konstanten
+  4  lead_logic.py: jede Funktion
+  5  db.py: jede Funktion + Schema
+  6  app.py: jede Route
+  7  exports.py
+  8  static/app.js: State, Funktionen, Filter-Konfiguration
+  9  templates/index.html: Aufbau und IDs
+  10 static/style.css
+  11 Datenfluss einer Suche
+  12 Tabellen-Switching Neu / Alt / Exportiert
+  13 Ereignisse (Event -> Wirkung)
+  14 Exakte Texte (Log, Toast, Statuszeile)
+  15 Neue Datenquelle einbauen
+  16 Bekannte Grenzen, Fehler und Risiken
+  17 Abnahme-Checkliste
+
+
+======================================================================
+1. UEBERBLICK UND DATEIEN
+======================================================================
+
+Lokale Web-App: Flask + SQLite + Vanilla JS, kein Build-Step. Sie holt Unternehmen aus einer Datenquelle,
+reichert sie an (Website-HTML, Bewertungstexte, Oeffnungsstatus), berechnet Signale und einen Score 0 bis 100 %,
+speichert dauerhaft und zeigt sie in drei Tabellen (Neu, Alt, Exportiert). Aenderungen sind ueber ein Log mit
+Undo/Redo umkehrbar.
+
+Abhaengigkeiten (requirements.txt): flask>=3.0.0, requests>=2.31.0, openpyxl>=3.1.0. Python 3.9+ (zoneinfo).
+
+Dateien:
+  app.py             Flask-Routen (duenn, keine Logik)
+  lead_logic.py      Datenquelle + Erkennung + Score. ENTHAELT ALLES GOOGLE-SPEZIFISCHE
+  db.py              SQLite: Schema, Migration, Queries, Log/Undo
+  exports.py         CSV, Excel, HubSpot-CSV
+  templates/index.html
+  static/app.js
+  static/style.css
+  leads.db           (gitignored, wird automatisch angelegt)
+  .gitignore         leads.db, __pycache__/, *.pyc, .DS_Store
+  SETUP.md           Anleitung zur Google-Key-Einrichtung
+
+Start: export GOOGLE_MAPS_API_KEY="..." ; python3 app.py   -> http://127.0.0.1:5050 (Port 5050, debug=False)
+
+WICHTIG: Flask ohne Debug cached Templates. Nach HTML-Aenderungen Server neu starten. Alten Prozess vorher beenden:
+lsof -ti :5050 | xargs kill -9
+
+
+======================================================================
+2. AUSTAUSCHPUNKTE: WAS IST GOOGLE-SPEZIFISCH?
+======================================================================
+
+Nur diese Stellen kennen Google. Alles andere ist provider-unabhaengig.
+
+  lead_logic.py  SEARCH_URL, DETAILS_URL                      Endpunkte
+  lead_logic.py  geocode_region()                             Ortsname -> Koordinaten (Places Text Search)
+  lead_logic.py  search_places()                              Suche, Feldmaske, Paginierung, locationBias
+  lead_logic.py  get_reviews()                                Details-Call, max. 5 Reviews
+  lead_logic.py  enrich_place() (Anfang)                      liest Google-Feldnamen (displayName.text, websiteUri ...)
+  app.py         get_api_key(), Env GOOGLE_MAPS_API_KEY       Key-Handling
+  app.py         min(radius_km, 50)                           Google-Limit 50 km
+  app.py         api_search/api_sync                          rufen geocode_region, search_places, enrich_place auf
+  app.py         Fehlertexte "Kein API-Key ..."               Wortlaut
+  index.html     #api-key-box, has_env_key                    Key-Eingabe
+  index.html     Umkreis-Select bis 50 km, Text "Google-Maximum"
+  index.html     Untertitel "Google Maps Leadsuche", Label "Google API-Key", Hinweis mit GOOGLE_MAPS_API_KEY,
+                 Info-Text "echte Google-Eroeffnungsdatum", Spaltenueberschrift "Google Profil" (3 Tabellen)
+  app.js         Erfolgsmeldung "N Treffer von Google, M neu zur DB hinzugefuegt." (Funktion doSearch)
+  exports.py     google_search_url()                          Profil-Link per Google-Suche
+  app.js         buildRow(): Zeile mapsLink                   gleicher Link
+  SETUP.md                                                    Key-Einrichtung
+
+ADAPTER-VERTRAG (Ziel beim Umbau). Jeder Provider liefert Objekte in exakt diesem Format, danach ist alles gleich:
+
+  RawPlace = {
+    "id": str,               # stabil + eindeutig (mit Prefix, z. B. "osm:node/123")
+    "name": str,
+    "address": str,
+    "phone": str,
+    "website": str,
+    "rating": float | None,
+    "rating_count": int,
+    "business_status": "OPERATIONAL" | "CLOSED_TEMPORARILY" | "CLOSED_PERMANENTLY" | "FUTURE_OPENING" | "",
+    "open_now": bool | None,
+    "opening_date": {"year": int, "month": int|None, "day": int|None} | None,
+  }
+  class Provider:
+      max_radius_km: float | None                 # Google: 50
+      geocode(region)  -> {"latitude":..,"longitude":..} | None
+      search(category, region, count, center, radius_km) -> list[RawPlace]
+      reviews(place_id) -> list[str]              # [] wenn nicht unterstuetzt
+
+MAPPING Google -> RawPlace:
+  id                                            -> id
+  displayName.text (Default "unbekannt")        -> name
+  formattedAddress                              -> address
+  nationalPhoneNumber, sonst internationalPhoneNumber -> phone
+  websiteUri                                    -> website
+  rating                                        -> rating
+  userRatingCount (oder 0)                      -> rating_count
+  businessStatus                                -> business_status
+  currentOpeningHours.openNow                   -> open_now
+  openingDate {year, month, day}                -> opening_date
+
+
+======================================================================
+3. KONSTANTEN (lead_logic.py; beim Umbau in eine config.py auslagern)
+======================================================================
+
+REQUEST_TIMEOUT = 10
+CET = ZoneInfo("Europe/Berlin")
+
+ICP_CATEGORIES = ["Kosmetikstudio", "Friseur", "Nagelstudio", "Botox / Medical Beauty", "Bleaching-Zentrum",
+  "Wellness / Spa", "Brautmode", "Physiotherapie", "Tierarzt / Hundesalon", "Tattoo-Studio", "Massage-Praxis"]
+
+COMPETITOR_SIGNATURES (Reihenfolge = Prioritaet, erster Treffer gewinnt):
+  "Fresha":    ["fresha.com", "fresha.de", "book with fresha", "powered by fresha"]
+  "Treatwell": ["treatwell.de", "treatwell.com", "treatwell.at", "treatwell.ch"]
+  "Planity":   ["planity.com"]
+  "SumUp":     ["sumup.com", "sumup.de", "pay.sumup"]
+  "Calendly":  ["calendly.com"]
+  "Booksy":    ["booksy.com"]
+  "Salonized": ["salonized.com"]
+  "Beautinda": ["beautinda.de", "beautinda.com", "book with beautinda", "powered by beautinda"]
+  "Shortcuts": ["shortcuts.com"]
+  "Timify":    ["timify.com"]
+  "Phorest":   ["phorest.com"]
+  "Terminland":["terminland.de", "terminland.com"]
+  "Salonkee":  ["salonkee.de", "salonkee.lu", "salonkee.com"]
+  "Timely":    ["gettimely.com"]
+  "Vagaro":    ["vagaro.com"]
+  "Shore (bereits Kunde)": ["shore.com/book", "book.shore.com", "shore-booking"]
+
+CATEGORY_WEIGHTS (Punkte 0..30; Annahme zu Ticketgroesse/Zahlungsverhalten, NICHT durch Zahlen belegt,
+wichtigster Hebel fuer den Score, mit echten Abschluessen kalibrieren):
+  Botox / Medical Beauty 30, Brautmode 30, Wellness / Spa 25, Bleaching-Zentrum 22, Kosmetikstudio 22,
+  Physiotherapie 20, Nagelstudio 18, Friseur 18, Massage-Praxis 18, Tattoo-Studio 15, Tierarzt / Hundesalon 15
+DEFAULT_CATEGORY_WEIGHT = 15 (freie Kategorien)
+
+OPENING_STATUS_BONUS = {"Bald eroeffnend": 20, "Neu eroeffnet": 15, "Etabliert": 0}
+(Im Code mit Umlauten: "Bald eröffnend", "Neu eröffnet".)
+
+PAIN_POINT_PATTERNS (Regex auf lowercased Review-Text; pro Label reicht ein Treffer):
+  "Schwer erreichbar": schwer erreichbar | nicht erreichbar | niemand (geht|nimmt) ans telefon |
+                       kein(e)? r(ü|ue)ckruf | nie(mand)? erreicht | telefonisch nicht
+  "Terminvergabe kompliziert": termin.{0,15}(schwierig|kompliziert|umst(ä|ae)ndlich) |
+                       lange (auf einen termin )?gewartet | keine termine (frei|verf(ü|ue)gbar) | schwer einen termin
+  "Keine Rückmeldung": keine (r(ü|ue)ckmeldung|antwort) | nicht (geantwortet|zur(ü|ue)ckgemeldet) |
+                       nachricht.{0,15}ignoriert
+
+STATUS_OPTIONS (Frontend): Neu, Kontaktiert, Termin gebucht, Nicht interessant, Kein Fit
+
+
+======================================================================
+4. lead_logic.py: JEDE FUNKTION
+======================================================================
+
+now_cet_sortable() -> str
+  datetime.now(CET).strftime("%Y-%m-%d %H:%M:%S"). Sortierbar, immer mit Uhrzeit.
+
+geocode_region(api_key, region) -> dict | None            [Google-spezifisch]
+  POST places:searchText, Body {"textQuery": region, "languageCode": "de"}, Feldmaske "places.location".
+  HTTP != 200 -> RuntimeError("Places API Fehler {status}: {text[:300]}").
+  Rueckgabe: places[0].location ({"latitude","longitude"}) oder None.
+  Funktioniert fuer Staedte, Bezirke und PLZ (getestet: "Berlin", "Wien", "10115 Berlin").
+
+search_places(api_key, query, max_results, location_bias=None) -> list[dict]   [Google-spezifisch]
+  Feldmaske: places.id, places.displayName, places.formattedAddress, places.internationalPhoneNumber,
+    places.nationalPhoneNumber, places.websiteUri, places.rating, places.userRatingCount, places.businessStatus,
+    places.currentOpeningHours.openNow, places.openingDate, nextPageToken
+  Body: {"textQuery": query, "languageCode": "de"}; bei Bias zusaetzlich
+    {"locationBias": {"circle": {"center": {lat,lng}, "radius": Meter}}}; ab Seite 2 "pageToken".
+  Schleife: while len(results) < max_results: sammeln, nextPageToken lesen, ohne Token break, sonst sleep(2).
+  Rueckgabe: results[:max_results]. query ist f"{category} in {region}".
+  Radius muss 0..50000 Meter sein, sonst HTTP 400 ("Radius must be in the range of [0, 50000]").
+  locationBias ist nur eine Praeferenz, keine harte Grenze.
+
+get_reviews(api_key, place_id) -> list[str]                [Google-spezifisch]
+  GET places/{place_id}, Feldmaske "reviews"; bei Status != 200 -> [].
+  Rueckgabe: reviews[].text.text (leere gefiltert). Google liefert maximal 5 Reviews (harte Grenze, keine Paginierung).
+
+fetch_website_html(url) -> str
+  Leere URL -> "". Sonst requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}).
+  Status 200 -> resp.text.lower(); Status != 200 oder RequestException -> "". Nur die Startseite, keine Unterseiten.
+
+detect_likely_new(rating_count, business_status) -> bool
+  business_status == "OPERATIONAL" and rating_count < 5. Schaetzung, kein echtes Eroeffnungsdatum.
+
+detect_opening_status(business_status, rating_count) -> str
+  "FUTURE_OPENING" -> "Bald eröffnend"; trifft detect_likely_new zu -> "Neu eröffnet"; sonst "Etabliert".
+
+format_opening_date(dict | None) -> str
+  Ohne Jahr "". Jahr+Monat+Tag -> "TT.MM.JJJJ"; Jahr+Monat -> "MM.JJJJ"; nur Jahr -> "JJJJ".
+
+detect_competitor(website, website_html, review_texts) -> str
+  Haystack = website.lower() + website_html + alle Review-Texte lowercase, mit Leerzeichen verbunden.
+  Fuer jedes System in Dict-Reihenfolge: kommt eine Signatur als Substring vor -> Systemname zurueck. Sonst "".
+  Es werden nur Domains und Phrasen gematcht, keine blossen Markennamen im Fliesstext.
+
+detect_pain_points(review_texts) -> list[str]
+  Texte lowercase zusammenfuegen. Pro Label reicht der erste Regex-Treffer (re.search, dann break). Liste der Labels.
+
+compute_score(competitor, likely_new) -> str               (Legacy-Ampel)
+  kein Konkurrent und neu -> "Heiss"; kein Konkurrent -> "Mittel"; sonst "Niedrig".
+  Wird im Feld "score" gespeichert, in der UI nicht angezeigt (nur im Export).
+
+compute_icp_score(category, rating_count, competitor, chain_flag, pain_points, opening_status="Etabliert") -> (int, str)
+  score  = CATEGORY_WEIGHTS.get(category, 15)
+  score += 25  wenn competitor == ""
+  score += 20  wenn rating_count >= 20, sonst 10 wenn rating_count >= 3
+  score += 15  wenn chain_flag
+  score += 10  wenn pain_points nicht leer
+  score += OPENING_STATUS_BONUS[opening_status]
+  score  = min(score, 100)
+  tier   = "A" wenn score >= 65, "B" wenn score >= 40, sonst "C"
+  Semantik: hoeher = besser, 100 % = perfekter Fit, sofort anrufen.
+
+normalize_name_for_chain_check(name) -> str
+  lowercase; Regex \b(gmbh|ug|e\.?k\.?|inh\.?|filiale|standort)\b entfernen; alle Ziffern entfernen;
+  alles ausser a-z und Whitespace entfernen; Whitespace normalisieren.
+
+flag_chains(leads) -> None   (in-place)
+  Gruppiere nach normalisiertem Namen (leere Keys ignorieren). Gruppengroesse 3 bis 9 -> chain_flag = True.
+  Nur innerhalb des aktuellen Batches (eine Suche mit einer Region).
+
+enrich_place(api_key, place, region, category) -> dict     (Anfang Google-spezifisch)
+  Liest die Google-Felder (Mapping Abschnitt 2), ruft get_reviews und (nur bei Website) fetch_website_html auf,
+  berechnet alle Signale. Rueckgabe-Dict (DB-Format):
+  place_id, name, address, phone, website, rating, rating_count, business_status, open_now,
+  category_query, region_query, likely_new, opening_status, opening_date, competitor_system,
+  pain_points ("Label1, Label2"), score, chain_flag=False, first_seen=now_cet_sortable(),
+  icp_score=0, icp_tier="", status="Neu", notes="".
+
+finalize_leads(leads) -> None   (in-place)
+  ERST flag_chains(leads), DANN pro Lead compute_icp_score(...) (pain_points per split(", ") zurueck in Liste),
+  icp_score/icp_tier setzen. Die Reihenfolge ist zwingend, weil der Score chain_flag braucht.
+
+
+======================================================================
+5. db.py: SCHEMA UND JEDE FUNKTION
+======================================================================
+
+DB_PATH = Path(__file__).parent / "leads.db"; row_factory = sqlite3.Row. Jede Funktion oeffnet und schliesst
+ihre eigene Verbindung.
+
+_now_cet(): wie now_cet_sortable. NIE SQLites datetime('now') nutzen (ist UTC).
+
+Schema (exakt):
+  leads(
+    place_id TEXT PRIMARY KEY, name TEXT, address TEXT, phone TEXT, website TEXT,
+    rating REAL, rating_count INTEGER, business_status TEXT, open_now INTEGER,
+    category_query TEXT, region_query TEXT, likely_new INTEGER,
+    opening_status TEXT, opening_date TEXT, competitor_system TEXT, pain_points TEXT, score TEXT,
+    chain_flag INTEGER, first_seen TEXT, icp_score INTEGER, icp_tier TEXT,
+    status TEXT DEFAULT 'Neu', notes TEXT DEFAULT '', hidden INTEGER DEFAULT 0, hidden_at TEXT)
+  watched_searches(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, region TEXT, category TEXT, count INTEGER,
+    radius_km REAL DEFAULT 0, created_at TEXT, UNIQUE(region, category))
+  action_log(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, action_type TEXT, description TEXT, payload TEXT,
+    undoable INTEGER DEFAULT 0, undone INTEGER DEFAULT 0, created_at TEXT)
+
+init_db(): CREATE TABLE IF NOT EXISTS fuer alle drei Tabellen, danach _migrate_add_columns.
+
+_migrate_add_columns(conn): liest PRAGMA table_info(leads) und ergaenzt fehlende Spalten per
+  ALTER TABLE ADD COLUMN (icp_score, icp_tier, status, notes, opening_status, opening_date, hidden, hidden_at).
+  Dasselbe fuer watched_searches.radius_km. Jede neue Spalte muss hier UND im CREATE TABLE stehen, sonst
+  fehlt sie in bestehenden Datenbanken.
+
+upsert_leads(leads) -> list[place_id]
+  Pro Lead SELECT 1 WHERE place_id=?. Existiert er -> ueberspringen (NIE ueberschreiben, damit Status/Notizen
+  nie verloren gehen). Sonst INSERT (Booleans zu int). Rueckgabe: nur die tatsaechlich neuen IDs.
+
+remember_search(region, category, count, radius_km=0)
+  INSERT ... ON CONFLICT(region, category) DO UPDATE SET count, radius_km.
+
+get_watched_searches() -> list[dict]: region, category, count, radius_km.
+
+get_all_leads(hot_only, region, category, tier, status, opening_status, include_hidden=False) -> list[dict]
+  SELECT *; ohne include_hidden gilt AND (hidden IS NULL OR hidden = 0). Optionale Filter. Sortierung
+  ORDER BY icp_score DESC, rating_count DESC.
+
+get_lead(place_id) -> dict | None
+
+update_lead(place_id, status=None, notes=None, hidden=None) -> bool
+  Lead existiert nicht -> False. hidden=True setzt hidden=1, hidden_at=_now_cet(); hidden=False setzt hidden=0,
+  hidden_at=NULL.
+
+hide_leads(place_ids) -> list
+  Selektiert die noch nicht ausgeblendeten IDs (IN (?,?,...)), merkt sich
+  previous = [{"place_id":..,"previous":{"hidden":..,"hidden_at":..}}], setzt hidden=1, hidden_at=jetzt,
+  gibt previous zurueck (Grundlage fuers Undo).
+
+hide_leads_before(cutoff_date) -> list
+  Selektiert IDs mit date(first_seen) <= date(?) und nicht ausgeblendet, ruft hide_leads(ids).
+
+log_action(action_type, description, payload=None, undoable=False) -> int
+  payload als JSON, created_at=_now_cet(). Rueckgabe: neue ID.
+
+get_logs(limit=50): ORDER BY id DESC.
+
+undo_log(log_id) -> dict | None
+  None wenn Eintrag fehlt, nicht undoable oder schon undone. Sonst pro Payload-Item: aktuelle Werte derselben
+  Felder lesen (= redo_payload), dann die previous-Werte per UPDATE leads SET feld=?,... WHERE place_id=?
+  zurueckschreiben (Feldnamen stammen nur aus eigenem Code, nie aus User-Input). Danach undone=1.
+  Rueckgabe: {"description", "count", "redo_payload"}.
+
+
+======================================================================
+6. app.py: JEDE ROUTE
+======================================================================
+
+get_api_key(): Header X-Api-Key hat Vorrang, sonst Env GOOGLE_MAPS_API_KEY.
+
+GET /
+  Rendert index.html mit categories=ICP_CATEGORIES und has_env_key.
+
+POST /api/search   Body {region, category, count=20, radius_km=0}
+  1. Kein Key -> 400. Region/Kategorie leer -> 400.
+  2. radius_km = min(float(radius_km or 0), 50).
+  3. regions = [r.strip() for r in region.split(",") if r.strip()].
+  4. Pro Region (Radius gilt pro Ort): bei radius_km > 0 geocode_region, daraus
+     location_bias = {"center": center, "radius": radius_km * 1000}. Dann
+     search_places(f"{category} in {region}", count, bias), enrich_place je Treffer, finalize_leads,
+     upsert_leads, remember_search(region, category, count, radius_km).
+     RuntimeError wird pro Region in errors gesammelt, die Schleife laeuft weiter.
+  5. Nur wenn ALLES fehlschlug (0 Treffer und 0 neue und Fehler) -> 502 {"error": "..."}.
+  6. log_action("search", ...), nicht undoable.
+  7. Antwort {found, new, new_place_ids[], errors[]}.
+
+POST /api/sync
+  Fuer jede watched_search dieselbe Pipeline mit gespeichertem count/radius_km; Fehler pro Suche in errors.
+  Keine gemerkten Suchen -> 400. Log "sync". Antwort {synced_searches, new, new_place_ids[], errors[]}.
+  Dauer gemessen: 7 Suchen = 58 s (ca. 8 s pro Suche), weil Reviews- und Website-Abrufe pro Treffer dominieren.
+
+GET /api/leads
+  Alle Leads inklusive ausgeblendeter (include_hidden=True). Die Einteilung Neu/Alt/Exportiert macht das Frontend.
+  Query-Parameter hot_only, region, category, tier, status, opening_status existieren, das Frontend nutzt sie nicht.
+
+PATCH /api/leads/<place_id>   Body {status?, notes?, hidden?}
+  404 wenn unbekannt. Nach dem Update: hat sich hidden geaendert -> undoable Log "hide"/"unhide"
+  (Payload = alter hidden/hidden_at). Hat sich status geaendert -> undoable Log "status_change".
+  Notizen werden nicht geloggt.
+
+POST /api/leads/hide-before   Body {date: "YYYY-MM-DD"}
+  Blendet aus, loggt "bulk_hide" (undoable, Payload = alle betroffenen Leads). Antwort {hidden: n, log_id}.
+  Leeres Datum -> 400.
+
+GET /api/logs?limit=50: neueste zuerst.
+
+POST /api/logs/<id>/undo
+  db.undo_log. Bei None -> 400 mit deutscher Meldung. Sonst neuer Log "undo" mit payload=redo_payload und
+  undoable=True. Undo vom Undo ist also Redo, die Kette ist unbegrenzt. Antwort {ok, count}.
+
+GET /api/export?format=csv|xlsx|hubspot&hot_only=0
+  rows = get_all_leads(hot_only) (nur nicht ausgeblendete). Diese werden per hide_leads ausgeblendet und als
+  "export" geloggt (undoable). Danach send_file. Die Ausblendung passiert beim Abruf, auch wenn der Download
+  nicht abgeschlossen wird. Es werden IMMER alle nicht ausgeblendeten Leads exportiert (Filter der UI wirken nicht).
+
+
+======================================================================
+7. exports.py
+======================================================================
+
+DISPLAY_COLUMNS (Feld / Ueberschrift), in dieser Reihenfolge:
+  name/Name, address/Adresse, phone/Telefon, website/Website, google_search_url/"Google Profil (Suche)",
+  icp_score/ICP-Score, icp_tier/ICP-Tier, competitor_system/"Erkanntes System", score/Konkurrenz-Ampel,
+  rating_count/"Anzahl Bewertungen", open_now/Geoeffnet, opening_status/Eroeffnungsstatus,
+  opening_date/"Geplantes Eroeffnungsdatum", chain_flag/"Filialkette (3-9)", pain_points/"Review Pain-Points",
+  status/Status, notes/Notiz, region_query/"Gesuchte Region", category_query/"Gesuchte Kategorie",
+  first_seen_display/"Erstmals gefunden"
+
+google_search_url(name, address): "https://www.google.com/search?q=" + quote_plus(f"{name} {address}".strip()), sonst "".
+format_first_seen(raw): Regex ^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))? -> "HH:MM - TT-MM-JJJJ"
+  (ohne Uhrzeit nur "TT-MM-JJJJ").
+_with_computed_fields(rows): fuegt google_search_url und first_seen_display in jede Zeile ein.
+rows_to_csv_bytes: Trenner ";", Encoding utf-8-sig (Excel-Umlaute).
+rows_to_xlsx_bytes: Blatt "Leads", Kopfzeile fett, Tier-Zelle eingefaerbt, Pain-Points-Zelle gelb FFD966,
+  Spaltenbreite min(maxlaenge + 2, 45). ACHTUNG: aktuell A = rot FF9C9C, B = FFE59C, C = grün D6F0D6 (falsch, siehe 16).
+rows_to_hubspot_csv_bytes: Spalten "Company name, Phone Number, Website URL, Google Profil (Suche), Street Address,
+  ICP Score, ICP Tier, Erkanntes Konkurrenzsystem, Status, Notiz". Notiz " | "-verkettet aus Eroeffnungsstatus
+  (mit Datum, wenn nicht "Etabliert"), "Teil einer Filialkette (3-9 Standorte)", "Review Pain-Points: ..." und der
+  eigenen Notiz.
+timestamped(name, ext): name_YYYYMMDD_HHMMSS.ext (lokale Serverzeit).
+rating wird gespeichert, aber weder angezeigt noch exportiert.
+
+
+======================================================================
+8. static/app.js
+======================================================================
+
+STATE
+  currentLeads[]          alle Leads (inkl. ausgeblendete) aus /api/leads
+  newOnlyIds              Set der place_ids der letzten Suche/des letzten Sync; wird jedes Mal KOMPLETT ersetzt;
+                          lebt nur im Browser (Reload = leer)
+  sortDescending          true = absteigend
+  toastTimer
+  filterState = {neu:{search:"",cols:{}}, alt:{...}, exported:{...}}   (Filter je Tabelle getrennt)
+  STATUS_OPTIONS
+
+FUNKTIONEN
+  apiKeyHeaders()      Content-Type; X-Api-Key nur wenn Key-Box sichtbar und ausgefuellt.
+  setStatus(msg)       schreibt in #statusMsg.
+  showToast(msg)       zeigt #toast 3 s; neuer Toast ersetzt den alten sofort.
+  escapeHtml(s)        ueber temporaeres Div.
+  formatFirstSeen(raw) wie im Export, in JS.
+  buildFilterRow(table, state)
+                       Erzeugt aus COLUMN_FILTERS eine zweite <tr class="filter-row"> im <thead>.
+                       text = Input (Event input), numMin = Zahlen-Input (input), select = Dropdown mit "alle" +
+                       Optionen (Event change), none = leer. Jede Aenderung setzt state.cols[i], ruft renderAll().
+  searchableText(l)    lowercase-Verkettung aus name, address, phone, website, competitor_system, pain_points,
+                       notes, status, opening_status, icp_tier, region_query, category_query.
+  applyTableFilters(leads, state)
+                       Erst Volltext (includes), dann pro Spaltenfilter (numMin: >=, select: exakter Vergleich
+                       ueber col.get(l), text: enthaelt, case-insensitive).
+  buildRow(lead)       <tr class="tier-A|B|C">. Status-Dropdown (change -> PATCH, lokal setzen, Toast, loadLogs),
+                       Notiz-Input (blur -> PATCH nur bei Aenderung), Website-Link, Google-Suche-Link,
+                       ICP-Score als "NN %", Eroeffnung "status (datum)", Zeit ueber formatFirstSeen.
+                       HubSpot-Button: togglet hidden (PATCH, lokal, Toast, renderAll, loadLogs); Label
+                       "In HubSpot" bzw. "Einblenden".
+  renderTable(tbodyId, countId, leads, state, useGlobalSort)
+                       Filtern, sortieren, rendern. Titelzaehlung "(gefiltert von gesamt)".
+                       Nur Alt nutzt sortSelect/sortDirBtn (Schluessel icp_score, rating_count, name, first_seen;
+                       fuer die Zeit dient der rohe ISO-String). Neu und Exportiert: fix ICP-Score absteigend.
+  renderAll()          Einteilung (Abschnitt 12), dann renderTable fuer alle drei.
+  updateLead(placeId, changes)   PATCH.
+  loadLeads()          GET /api/leads, dann renderAll.
+  loadLogs()           GET /api/logs?limit=50; fuellt #logBody, #logCount, #logLatest (neuester Eintrag mit Zeit);
+                       jeder undoable, nicht-undone Eintrag bekommt Button "Rückgängig".
+  undoLog(id)          POST Undo, Toast, loadLeads + loadLogs.
+  getRadiusKm()        Select-Wert; bei "custom" der Zahlenwert; auf 50 geklemmt.
+  doSearch()           Validierung, POST /api/search, newOnlyIds = new Set(new_place_ids), loadLeads, loadLogs.
+  doSync()             analog mit /api/sync.
+  doHideBefore()       confirm(), POST /api/leads/hide-before.
+  exportAs(format)     window.location = /api/export?format=...&hot_only=0; nach 1500 ms loadLeads + loadLogs.
+
+COLUMN_FILTERS (17 Eintraege, Reihenfolge = <th>; wenn die Spaltenzahl im HTML waechst, muss das Array mitwachsen):
+   1 Name            text
+   2 Adresse         text
+   3 Telefon         text
+   4 Website         select ja/nein   (get: website ? "ja" : "nein")
+   5 Google Profil   none
+   6 ICP-Score       numMin
+   7 Tier            select A/B/C
+   8 System          select (alle Systeme aus Abschnitt 3 + "ohne"; get: competitor_system || "ohne")
+   9 # Reviews       numMin
+  10 Offen           select ja/nein
+  11 Eroeffnung      select Bald eroeffnend/Neu eroeffnet/Etabliert (get: opening_status || "Etabliert")
+  12 Kette?          select ja/nein
+  13 Pain-Points     text
+  14 Status          select (STATUS_OPTIONS)
+  15 Notiz           text
+  16 In DB seit      text (auf dem formatierten String)
+  17 HubSpot         none
+
+STARTUP: buildFilterRow fuer #neuTable, #altTable, #exportedTable; Suchfeld-Listener (#neuSearch, #altSearch,
+#exportedSearch, Event input); Button-Listener; loadLeads(); loadLogs().
+Jede in app.js referenzierte ID muss im HTML existieren, sonst stuerzt das Skript beim Laden ab.
+
+
+======================================================================
+9. templates/index.html: AUFBAU UND IDs
+======================================================================
+
+Von oben nach unten:
+  #toast
+  Header (Titel, Untertitel)
+  #api-key-box (nur ohne Env-Key; #apiKeyInput)
+  Aktivitaets-Log: <details class="log-box"> mit #logCount, #logLatest (eigene Zeile unter der Ueberschrift), #logBody
+  Suche: #region, #radiusSelect (0 / 5 / 15 / 50 / custom), #radiusCustom, #category (+ <datalist id="categoryList">
+         aus categories), #count (1 bis 60), #searchBtn, #syncBtn, #statusMsg
+  Aufraeumen: <details>, #hideBeforeDate, #hideBeforeBtn
+  NEU:        <details open>, #neuCount, #neuSearch, #neuTable, #neuBody
+  ALT:        <details open>, #leadCount, #sortSelect, #sortDirBtn, #exportCsv, #exportXlsx, #exportHubspot,
+              #altSearch, #altTable, #leadsBody, eingeklappte Info-Box (Erklaerung Score/Tier/Eroeffnung)
+  EXPORTIERT: <details>, #exportedCount, #exportedSearch, #exportedTable, #exportedBody
+
+Alle drei Tabellen haben dieselben 17 <th>: Name, Adresse, Telefon, Website, Google Profil, ICP-Score (%), Tier,
+System, # Reviews, Offen, Eroeffnung, Kette?, Pain-Points, Status, Notiz, In DB seit, HubSpot.
+
+Standardzustand beim Laden: Neu und Alt offen; Exportiert, Log und Aufraeumen zugeklappt. Auf-/Zuklappen ist reines
+HTML (<details>), wird nicht gespeichert.
+
+
+======================================================================
+10. static/style.css
+======================================================================
+
+Farben: --heiss #c9ecc9 (Tier A, gruen), --mittel #ffe0a3 (Tier B, gelb), --niedrig #ffb3b3 (Tier C, rot),
+--border #ddd. Zeilen: tr.tier-A / tr.tier-B / tr.tier-C. Sektionen: .table-section (Pfeil per ::before, Standard-
+Marker ausgeblendet). Log: .log-box, .log-latest, .log-list, .log-entry, .log-time, .log-desc, .log-undo-btn.
+Filter: tr.filter-row th (sticky, top: 29px), .col-filter-input, .col-filter-num. Suche: .table-search.
+Toast: .toast (fixed, oben mittig, z-index 1000). Hilfsklasse .hidden { display: none }.
+Buttons: button, button.secondary, .hide-btn. Kopfzeilen th: position sticky, top 0. Zellen nowrap; nur Adresse und
+Pain-Points (td.wrap) umbrechen, max-width 240 px. Inline-Inputs: .inline-select, .inline-input (140 px).
+
+
+======================================================================
+11. DATENFLUSS EINER SUCHE
+======================================================================
+
+Formular -> POST /api/search -> pro Region (geocode nur bei Radius) -> search_places -> pro Treffer enrich_place
+(Reviews holen, Website laden, Signale) -> finalize_leads (Ketten, dann Score) -> upsert_leads (nur neue) ->
+remember_search -> Log. Danach im Browser: newOnlyIds setzen, loadLeads(), renderAll(). Neue Leads erscheinen
+in "Neu", alle frueheren in "Alt".
+
+Sync: dasselbe fuer jede gemerkte Suche mit gespeichertem count und radius_km.
+
+
+======================================================================
+12. TABELLEN-SWITCHING NEU / ALT / EXPORTIERT
+======================================================================
+
+Grundregel (renderAll), in dieser Prioritaet:
+  1. hidden = 1                      -> Exportiert
+  2. sonst ID in newOnlyIds          -> Neu
+  3. sonst                           -> Alt
+Die Tabellen werden bei jeder Aenderung komplett neu berechnet; es gibt kein manuelles Verschieben.
+
+Uebergaenge:
+  Suche/Sync fertig       newOnlyIds wird komplett durch die IDs der wirklich neuen Leads ersetzt. Alle vorherigen
+                          "Neu"-Leads rutschen nach Alt. Findet der Lauf 0 neue Leads, ist Neu danach leer.
+  "In HubSpot" (Neu/Alt)  PATCH hidden=true -> Exportiert. Log "hide", Toast.
+  "Einblenden" (Exportiert) PATCH hidden=false -> zurueck nach Neu, wenn die ID noch in newOnlyIds steht (gleiche
+                          Browser-Sitzung seit der letzten Suche), sonst nach Alt.
+  Export CSV/Excel/HubSpot  Server blendet ALLE nicht ausgeblendeten Leads aus (unabhaengig von UI-Filtern);
+                          nach 1,5 s Neuladen, dann liegen sie in Exportiert.
+  "Bis Datum ausblenden"  alle nicht ausgeblendeten mit first_seen-Datum <= Stichtag -> Exportiert (auch aus Neu).
+  Undo/Redo               loadLeads + loadLogs, danach ordnet die Grundregel neu ein.
+  Seite neu laden         newOnlyIds leer -> Neu leer, alles Nicht-Ausgeblendete liegt in Alt.
+  Status/Notiz aendern    kein Tabellenwechsel.
+Spaltenfilter und Suchtexte je Tabelle bleiben beim Verschieben erhalten und gehen nur beim Neuladen verloren.
+
+
+======================================================================
+13. EREIGNISSE (EVENT -> WIRKUNG)
+======================================================================
+
+  Klick searchBtn            Button gesperrt (disabled), Statuszeile "Suche laeuft ...", POST, danach entsperrt
+  Klick syncBtn              Button gesperrt, Statuszeile "Sync laeuft — prueft alle gespeicherten Suchen erneut auf
+                             neue Laeden ...", danach entsperrt
+  Aenderung radiusSelect     Zahlenfeld #radiusCustom nur bei "eigener Wert" sichtbar
+  Aenderung Status-Dropdown  PATCH, lokaler Wert, Toast, Log neu laden
+  blur im Notizfeld          PATCH nur bei geaendertem Text; kein Toast, kein Log
+  Tippen in Spaltenfilter    text/numMin: Event input, sofort neu rendern
+  Auswahl in Spaltenfilter   select: Event change, sofort neu rendern
+  Tippen in Suchfeld         Event input, sofort neu rendern
+  sortSelect / sortDirBtn    neu rendern (nur Alt betroffen)
+  Klick "Bis Datum ausblenden"  leeres Datum: Statusmeldung; sonst confirm()-Dialog, dann POST
+  Klick Export               Datei-Download, nach 1,5 s Neuladen
+  Klick "Rückgängig"         POST Undo, Toast "Rückgängig gemacht (N betroffen)", Neuladen
+  Toast                      3 Sekunden; ein neuer Toast ersetzt den alten sofort
+Es gibt KEINEN Enter-Handler: Enter im Region-/Kategorie-Feld startet keine Suche. Gesperrt werden nur searchBtn
+und syncBtn.
+
+
+======================================================================
+14. EXAKTE TEXTE
+======================================================================
+
+Log-Beschreibungen (serverseitig, ohne Umlaute):
+  search        Suche 'X' in R[, Umkreis N km]: F Treffer, M neu
+  sync          Sync: N gespeicherte Suchen geprueft, M neu
+  hide/unhide   {Name}: ausgeblendet   /   {Name}: eingeblendet
+  status_change {Name}: Status 'alt' -> 'neu'
+  bulk_hide     N Leads bis DATUM ausgeblendet
+  export        N Leads als CSV exportiert und ausgeblendet   (CSV | XLSX | HUBSPOT)
+  undo          Rueckgaengig gemacht: <Beschreibung des Originals>
+
+Toasts / Statuszeile (Frontend):
+  {Name}: Status → X
+  {Name}: ausgeblendet | eingeblendet
+  N Leads ausgeblendet.
+  Suche:  "F Treffer von Google, M neu zur DB hinzugefügt." [+ " (K Fehler, siehe Konsole)"]
+  Sync:   "Sync fertig: N gespeicherte Suchen geprüft, M neue Leads gefunden." [+ Fehlerhinweis]
+  Undo:   "Rückgängig gemacht (N betroffen)"
+  Fehler: "Fehler: ..." / "Netzwerkfehler: ..."
+
+Weitere Details:
+  count ist 1 bis 60 (Google liefert hoechstens 3 Seiten a 20, sleep(2) zwischen den Seiten, also mindestens
+  4 s extra bei 60 Treffern). open_now = None wird als "nein" angezeigt.
+
+
+======================================================================
+15. NEUE DATENQUELLE EINBAUEN
+======================================================================
+
+ 1. Neue Datei providers/<name>.py mit geocode, search, reviews, max_radius_km nach dem Adapter-Vertrag
+    (Abschnitt 2). Die Mapping-Tabelle zeigt, wie das Ergebnis deiner Quelle auf RawPlace abgebildet wird.
+ 2. enrich_place liest nur noch RawPlace-Felder.
+ 3. In app.py search_places/geocode_region durch provider.search/provider.geocode ersetzen. min(radius, 50) wird
+    zu min(radius, provider.max_radius_km). Key-Handling und Fehlertexte anpassen (manche Quellen brauchen keinen Key).
+ 4. Umkreis-Optionen im HTML an das neue Maximum anpassen. Google-Texte aus der Tabelle in Abschnitt 2 austauschen.
+ 5. id mit Provider-Prefix versehen, falls spaeter mehrere Quellen gemischt werden; dann ist der Abgleich ueber
+    Quellen hinweg ein eigenes Thema (Name + Adresse normalisieren).
+ 6. Quellen ohne Reviews: reviews() gibt [] zurueck. Pain-Points bleiben dann leer, die Buchungssystem-Erkennung
+    laeuft ueber die Website weiter.
+ 7. Quellen ohne Oeffnungsstatus: business_status = "" ergibt "Etabliert". Hat die Quelle ein Eroeffnungsdatum
+    (z. B. OSM start_date), daraus "Neu eröffnet" ableiten.
+ 8. Tests: 5 Treffer holen; zweiter Lauf ergibt 0 neue; Radius ueber Maximum wird geklemmt; Fehlerfall wirft
+    keine Exception nach oben.
+
+Kandidaten (Preise, Felder und Limits vor dem Bau selbst pruefen, sie sind hier NICHT verifiziert):
+OpenStreetMap Overpass + Nominatim (kostenlos, kein Key, keine Bewertungen), Foursquare Places, HERE, TomTom,
+Geoapify, Yelp Fusion, Scraping-Dienste (SerpApi, Outscraper, Apify; Nutzungsbedingungen pruefen).
+
+
+======================================================================
+16. BEKANNTE GRENZEN, FEHLER UND RISIKEN
+======================================================================
+
+FEHLER IM CODE (geprueft, im Neubau direkt richtig bauen):
+  1. Export ignoriert UI-Filter. exportAs schickt keine Filter. Wer in Alt nach "Treatwell" filtert und Export
+     klickt, exportiert und blendet ALLE nicht ausgeblendeten Leads aus. Undo macht es rueckgaengig.
+  2. Namens-Sortierung ist verkehrt herum: bei "absteigend" sortiert Name A bis Z (die Zahlen und die Zeit
+     sortieren korrekt absteigend). Ursache: dir * a.localeCompare(b) bei dir = 1.
+  3. Netzwerkfehler nicht abgefangen: geocode_region, search_places und get_reviews fangen requests-Fehler
+     (Timeout, Verbindungsabbruch) nicht ab, app.py faengt nur RuntimeError. Ein Timeout fuehrt zu HTTP 500 fuer die
+     GANZE Suche statt zu einem gesammelten Teilfehler; das Frontend zeigt "Netzwerkfehler: ...".
+  4. Excel-Farben vertauscht: exports.py faerbt Tier A rot und C gruen, die UI zeigt A gruen und C rot.
+  5. NICHT GEPRUEFT (nur vermutet): hide_leads baut ein IN (?,?,...) mit allen IDs; bei sehr vielen Leads koennte
+     SQLites Grenze fuer Platzhalter ueberschritten werden. Bei ca. 40 Leads tritt das nicht auf.
+
+DATENQUELLE (Google): maximal 5 Reviews (keine Paginierung); maximal 50 km Radius (sonst HTTP 400); kein
+"Profil erstellt am"-Datum; kein Feld fuer "Jetzt buchen" (reservable gilt nur fuer Restaurants); Drittanbieter-
+Bewertungen (z. B. Treatwell-Zahl im Panel) sind nicht per API erhaeltlich.
+
+ERKENNUNG: Ein Buchungssystem wird nur erkannt, wenn die Domain im HTML der Startseite oder in den abrufbaren
+Reviews steht. Unterseiten (z. B. /buchen) werden nicht geladen. "Neu eröffnet" ist eine Schaetzung.
+
+DESIGN: Bestehende Leads werden nie neu bewertet. Undo eines aelteren Eintrags ueberschreibt spaetere Aenderungen
+am selben Lead. newOnlyIds lebt nur im Browser. Test-Suchen fuellen die Produktiv-DB (fuer Tests eigene DB-Datei).
+
+FALLSTRICKE: Templates werden ohne Debug gecacht (Server neu starten). Neue Spalten in beiden Tabellen migrieren.
+Zeiten immer mit Uhrzeit und in Python erzeugen. leads.db und API-Keys nie committen (Repo kann oeffentlich sein).
+
+
+======================================================================
+17. ABNAHME-CHECKLISTE
+======================================================================
+
+[ ] Suche mit 2 Orten + Radius liefert Treffer aus beiden; Radius ueber Maximum wird geklemmt
+[ ] Gleiche Suche zweimal -> 0 neue, keine Dubletten
+[ ] Sync durchlaeuft alle gemerkten Suchen mit ihrem Radius
+[ ] Score/Tier nach Abschnitt 4 nachrechenbar (Stichprobe von 5 Leads)
+[ ] Konkurrenz aus HTML erkannt (Testseite mit fresha.com-Link)
+[ ] Einteilung Neu/Alt/Exportiert nach Abschnitt 12; neue Suche verschiebt vorherige Neu-Leads nach Alt;
+    Suche ohne neue Leads leert Neu
+[ ] "Einblenden" schickt Lead nach Neu (gleiche Sitzung) bzw. Alt (nach Reload)
+[ ] Spaltenfilter + Volltextsuche in allen drei Tabellen
+[ ] Export blendet aus und ist per Undo komplett umkehrbar; Redo funktioniert
+[ ] Export beruecksichtigt die aktiven Filter (Fehler 1 behoben)
+[ ] Namens-Sortierung: "absteigend" ergibt Z bis A (Fehler 2 behoben)
+[ ] Netzwerk-Timeout bei einer Region ergibt Teilfehler statt HTTP 500 (Fehler 3 behoben)
+[ ] Excel: Tier A gruen, B gelb, C rot (Fehler 4 behoben)
+[ ] Zeiten CET, Format HH:MM - TT-MM-JJJJ; Sortierung nach "Zuerst gefunden" aendert die Reihenfolge sichtbar
+[ ] Kein API-Key und keine leads.db im Repo
