@@ -108,7 +108,7 @@ PROMPT C: NUR DIE DATENQUELLE IM BESTEHENDEN PROJEKT TAUSCHEN
 Lies BUILD_GUIDE.txt, besonders Abschnitt 2 (Austauschpunkte und Adapter-Vertrag) und Abschnitt 15. Ersetze die
 Datenquelle Google Places durch <GEWAEHLTE QUELLE>. Aendere nur die Stellen aus der Austausch-Tabelle:
 lead_logic.py (geocode_region, search_places, get_reviews, Anfang von enrich_place), app.py (Key-Handling, Radius-Limit,
-Fehlertexte), index.html und app.js (Google-Texte, Umkreis-Optionen), exports.py und app.js (Profil-Link), SETUP.md.
+Fehlertexte), index.html und app.js (Google-Texte, Umkreis-Optionen), exports.py und app.js (Profil-Link), README.md (Schnellstart und Google-Texte).
 Fuehre keine anderen Umbauten durch. Zeige mir vor dem Schreiben eine Liste der geplanten Aenderungen je Datei und
 warte auf mein Ok. Danach: Abnahme mit den Punkten "Suche mit 2 Orten", "gleiche Suche zweimal ergibt 0 neue",
 "Radius wird geklemmt", "Timeout bei einer Region ergibt Teilfehler". Wenn die Quelle keine Reviews oder keinen

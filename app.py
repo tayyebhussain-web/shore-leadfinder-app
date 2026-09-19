@@ -7,7 +7,7 @@ Start:
     python3 app.py
     -> oeffnet auf http://127.0.0.1:5050
 
-Siehe SETUP.md fuer die einmalige Google-API-Key-Einrichtung.
+Siehe README.md fuer die einmalige Google-API-Key-Einrichtung.
 """
 
 import os

@@ -48,7 +48,7 @@ Dateien:
   static/style.css
   leads.db           (gitignored, wird automatisch angelegt)
   .gitignore         leads.db, __pycache__/, *.pyc, .DS_Store
-  SETUP.md           Anleitung zur Google-Key-Einrichtung
+  README.md          Projektbeschreibung fuer GitHub + Schnellstart inkl. Google-Key-Einrichtung
 
 Start: export GOOGLE_MAPS_API_KEY="..." ; python3 app.py   -> http://127.0.0.1:5050 (Port 5050, debug=False)
 
@@ -78,7 +78,7 @@ Nur diese Stellen kennen Google. Alles andere ist provider-unabhaengig.
   app.js         Erfolgsmeldung "N Treffer von Google, M neu zur DB hinzugefuegt." (Funktion doSearch)
   exports.py     google_search_url()                          Profil-Link per Google-Suche
   app.js         buildRow(): Zeile mapsLink                   gleicher Link
-  SETUP.md                                                    Key-Einrichtung
+  README.md                                                   Key-Einrichtung (Abschnitt Schnellstart), Google-Texte
 
 ADAPTER-VERTRAG (Ziel beim Umbau). Jeder Provider liefert Objekte in exakt diesem Format, danach ist alles gleich:
 
