@@ -26,6 +26,11 @@ def now_cet_sortable() -> str:
     """ISO-artiger, lexikographisch sortierbarer Zeitstempel in CET/CEST (z.B. '2026-09-18 18:52:00')."""
     return datetime.now(CET).strftime("%Y-%m-%d %H:%M:%S")
 
+# Woher ein Lead stammt. Aktuell gibt es nur einen Beschaffungsweg (Google Places), das Feld ist aber vorbereitet
+# fuer weitere Quellen (z.B. Treatwell-Verzeichnis, Northdata), damit spaeter erkennbar bleibt, woher ein
+# einzelner Lead kam. Bekannte Werte stehen zusaetzlich in static/app.js (LEAD_SOURCES) fuer den Spaltenfilter.
+LEAD_SOURCE_GOOGLE = "Google Maps API"
+
 ICP_CATEGORIES = [
     "Kosmetikstudio",
     "Friseur",
@@ -294,6 +299,57 @@ def detect_pain_points(review_texts: list) -> list:
     return found
 
 
+EMAIL_PATTERN = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*\.[a-zA-Z]{2,24}\b")
+# Ausschluesse: technische/generische Adressen, die auf fast jeder Website vorkommen, aber nicht zum Betrieb gehoeren
+EMAIL_JUNK_LOCAL = {"wordpress", "sentry", "wixpress", "example", "godaddy", "domain", "test", "noreply",
+                    "no-reply", "your", "youremail", "email", "name", "datenschutz", "dsgvo", "privacy",
+                    "jobs", "karriere", "bewerbung", "presse", "press", "compliance", "legal", "impressum",
+                    "webmaster", "admin", "security", "abuse", "sicherheit", "medizinproduktesicherheit",
+                    "hr", "recruiting"}
+EMAIL_JUNK_DOMAIN = {"sentry.io", "wixpress.com", "example.com", "godaddy.com", "schema.org", "w3.org",
+                     "cloudflare.com", "google.com", "gstatic.com", "domain.com", "wordpress.org",
+                     "wordpress.com", "sentry-cdn.com", "yoast.com", "email.com", "email.de",
+                     "personio.de", "personio.com", "datenschutz-berlin.de"}
+
+
+def _email_domain_junk(domain: str) -> bool:
+    return any(domain == d or domain.endswith("." + d) for d in EMAIL_JUNK_DOMAIN)
+
+
+def detect_email(website: str, website_html: str) -> str:
+    """Plausibelste Kontakt-E-Mail aus dem Website-HTML: zuerst mailto-Links, dann rohe Adressen im Text.
+    mailto-Werte werden gegen dasselbe Muster wie Text-Treffer geprueft, damit angehaengte Satzzeichen oder
+    Platzhalter (z.B. "your@email") nicht durchrutschen. Adressen auf der EIGENEN Domain des Betriebs (z.B.
+    info@dental21-kudamm.de bei website dental21-kudamm.de) gehen vor Adressen auf fremden Domains (Buchungs-
+    portale, Datenschutz-Sammeladressen, HR-Tools) - so wird nicht zufaellig die erstbeste E-Mail im HTML
+    gewaehlt, wenn eine Seite mehrere fuehrt. Gibt "" zurueck, wenn nichts Plausibles gefunden wurde."""
+    if not website_html:
+        return ""
+    # In eingebettetem JSON/JS steht ein Anfuehrungszeichen manchmal als literales " statt ": das klebt
+    # sonst als "u0022" am Anfang der naechsten E-Mail (z.B. "webmaster@...).
+    website_html = website_html.replace("\\u0022", '"')
+    raw = [m.group(1) for m in re.finditer(r'mailto:([^"\'\s?&<>]+)', website_html, re.I)]
+    raw += EMAIL_PATTERN.findall(website_html)
+
+    own_domain = re.sub(r"^www\.", "", urlparse(website if "//" in (website or "") else "//" + (website or "")).netloc.lower())
+    own, other, seen = [], [], set()
+    for r in raw:
+        m = EMAIL_PATTERN.search(r)
+        if not m:
+            continue
+        addr = m.group(0)
+        low = addr.lower()
+        if low in seen:
+            continue
+        local, _, domain = low.partition("@")
+        if not domain or _email_domain_junk(domain) or local in EMAIL_JUNK_LOCAL:
+            continue
+        seen.add(low)
+        (own if own_domain and (domain == own_domain or domain.endswith("." + own_domain)) else other).append(addr)
+    picks = own or other
+    return picks[0] if picks else ""
+
+
 def compute_score(competitor: str, likely_new: bool) -> str:
     if not competitor and likely_new:
         return "Heiss"
@@ -428,6 +484,7 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
     opening_date = format_opening_date(place.get("openingDate"))
     competitor = detect_competitor(website, website_html, review_texts)
     pain_points = detect_pain_points(review_texts)
+    email = detect_email(website, website_html)
     score = compute_score(competitor, likely_new)
 
     return {
@@ -436,6 +493,8 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
         "address": place.get("formattedAddress", ""),
         "phone": phone,
         "website": website,
+        "email": email,
+        "lead_source": LEAD_SOURCE_GOOGLE,
         "rating": place.get("rating"),
         "rating_count": rating_count,
         "business_status": business_status,

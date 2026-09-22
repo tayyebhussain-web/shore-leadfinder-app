@@ -8,6 +8,7 @@ DISPLAY_COLUMNS = [
     ("name", "Name"),
     ("address", "Adresse"),
     ("phone", "Telefon"),
+    ("email", "E-Mail"),
     ("website", "Website"),
     ("google_search_url", "Google Profil (Suche)"),
     ("icp_score", "ICP-Score"),
@@ -25,6 +26,7 @@ DISPLAY_COLUMNS = [
     ("region_query", "Gesuchte Region"),
     ("category_query", "Gesuchte Kategorie"),
     ("first_seen_display", "Erstmals gefunden"),
+    ("lead_source", "Lead-Quelle"),
 ]
 
 FIRST_SEEN_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?")
@@ -106,8 +108,8 @@ def rows_to_hubspot_csv_bytes(rows: list) -> bytes:
     rows = _with_computed_fields(rows)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Company name", "Phone Number", "Website URL", "Google Profil (Suche)", "Street Address",
-                      "ICP Score", "ICP Tier", "Erkanntes Konkurrenzsystem", "Status", "Notiz"])
+    writer.writerow(["Company name", "Phone Number", "Email", "Website URL", "Google Profil (Suche)",
+                      "Street Address", "ICP Score", "ICP Tier", "Erkanntes Konkurrenzsystem", "Status", "Notiz"])
     for r in rows:
         note_parts = []
         if r.get("opening_status") and r.get("opening_status") != "Etabliert":
@@ -120,9 +122,9 @@ def rows_to_hubspot_csv_bytes(rows: list) -> bytes:
         if r.get("notes"):
             note_parts.append(r["notes"])
         writer.writerow([
-            r.get("name", ""), r.get("phone", ""), r.get("website", ""), r.get("google_search_url", ""),
-            r.get("address", ""), r.get("icp_score", ""), r.get("icp_tier", ""), r.get("competitor_system", ""),
-            r.get("status", ""), " | ".join(note_parts),
+            r.get("name", ""), r.get("phone", ""), r.get("email", ""), r.get("website", ""),
+            r.get("google_search_url", ""), r.get("address", ""), r.get("icp_score", ""), r.get("icp_tier", ""),
+            r.get("competitor_system", ""), r.get("status", ""), " | ".join(note_parts),
         ])
     return buf.getvalue().encode("utf-8-sig")
 

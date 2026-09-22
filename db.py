@@ -32,6 +32,8 @@ def init_db():
             address TEXT,
             phone TEXT,
             website TEXT,
+            email TEXT DEFAULT '',
+            lead_source TEXT DEFAULT '',
             rating REAL,
             rating_count INTEGER,
             business_status TEXT,
@@ -93,10 +95,15 @@ def _migrate_add_columns(conn):
         "opening_date": "TEXT",
         "hidden": "INTEGER DEFAULT 0",
         "hidden_at": "TEXT",
+        "email": "TEXT DEFAULT ''",
+        "lead_source": "TEXT DEFAULT ''",
     }
     for col, coltype in additions.items():
         if col not in existing:
             conn.execute(f"ALTER TABLE leads ADD COLUMN {col} {coltype}")
+    if "lead_source" not in existing:
+        # Alle bisherigen Leads kamen ausnahmslos ueber Google, bevor es das Feld gab
+        conn.execute("UPDATE leads SET lead_source = 'Google Maps API' WHERE lead_source IS NULL OR lead_source = ''")
 
     ws_existing = {row["name"] for row in conn.execute("PRAGMA table_info(watched_searches)").fetchall()}
     if "radius_km" not in ws_existing:
@@ -117,11 +124,11 @@ def upsert_leads(leads: list) -> list:
         if cur.fetchone():
             continue
         cur.execute("""
-            INSERT INTO leads (place_id, name, address, phone, website, rating, rating_count,
+            INSERT INTO leads (place_id, name, address, phone, website, email, lead_source, rating, rating_count,
                 business_status, open_now, category_query, region_query, likely_new,
                 opening_status, opening_date, competitor_system, pain_points, score, chain_flag, first_seen,
                 icp_score, icp_tier, status, notes)
-            VALUES (:place_id, :name, :address, :phone, :website, :rating, :rating_count,
+            VALUES (:place_id, :name, :address, :phone, :website, :email, :lead_source, :rating, :rating_count,
                 :business_status, :open_now, :category_query, :region_query, :likely_new,
                 :opening_status, :opening_date, :competitor_system, :pain_points, :score, :chain_flag, :first_seen,
                 :icp_score, :icp_tier, :status, :notes)
@@ -246,7 +253,7 @@ def hide_leads_before(cutoff_date: str) -> list:
     return hide_leads([r["place_id"] for r in rows])
 
 
-RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score")
+RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score", "email")
 
 
 def set_lead_fields(updates: list) -> None:

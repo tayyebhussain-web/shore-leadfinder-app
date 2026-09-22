@@ -26,6 +26,9 @@ function showToast(msg) {
 }
 
 const STATUS_OPTIONS = ["Neu", "Kontaktiert", "Termin gebucht", "Nicht interessant", "Kein Fit"];
+// Woher ein Lead kam. Aktuell liefert nur Google Maps API Leads; die weiteren Werte sind fuer spaeter
+// vorgesehen (z.B. Treatwell-Verzeichnis, Northdata), damit der Filter schon bereitsteht, sobald es sie gibt.
+const LEAD_SOURCES = ["Google Maps API", "Treatwell", "Northdata"];
 
 // Sortierung je Tabelle (Neu und Alt haben je eine eigene Leiste). desc = absteigend (bestes/größtes zuerst).
 const sortState = {
@@ -57,6 +60,7 @@ const COLUMN_FILTERS = [
     { type: "text", get: l => l.name },
     { type: "text", get: l => l.address },
     { type: "text", get: l => l.phone },
+    { type: "text", get: l => l.email },
     { type: "select", options: ["ja", "nein"], get: l => l.website ? "ja" : "nein" },
     { type: "none" }, // Google Profil (immer vorhanden, kein sinnvoller Filter)
     { type: "numMin", get: l => l.icp_score || 0 },
@@ -82,6 +86,7 @@ const COLUMN_FILTERS = [
     { type: "select", options: STATUS_OPTIONS, get: l => l.status || "Neu" },
     { type: "text", get: l => l.notes },
     { type: "text", get: l => formatFirstSeen(l.first_seen) },
+    { type: "select", options: LEAD_SOURCES, get: l => l.lead_source || "Google Maps API" },
     { type: "none" }, // HubSpot-Button
 ];
 
@@ -94,8 +99,8 @@ const filterState = {
 // --- Spaltenreihenfolge (per Maus verschiebbar, gilt fuer alle drei Tabellen) ---
 // Jede Zelle traegt data-col mit der Spalten-ID. Die Zellen werden immer in Standardreihenfolge erzeugt und
 // danach nach columnOrder sortiert. Filter und Eingabefelder bleiben dabei erhalten, es werden nur Knoten verschoben.
-const COLUMN_IDS = ["name", "address", "phone", "website", "google", "score", "tier", "system", "reviews", "open",
-    "opening", "chain", "pain", "status", "notes", "since", "hubspot"];
+const COLUMN_IDS = ["name", "address", "phone", "email", "website", "google", "score", "tier", "system", "reviews", "open",
+    "opening", "chain", "pain", "status", "notes", "since", "source", "hubspot"];
 const COLUMN_ORDER_KEY = "leadfinder.columnOrder";
 const TABLE_IDS = ["neuTable", "altTable", "exportedTable"];
 
@@ -277,8 +282,8 @@ function buildFilterRow(table, state) {
 }
 
 function searchableText(l) {
-    return [l.name, l.address, l.phone, l.website, l.competitor_system, l.pain_points,
-        l.notes, l.status, l.opening_status, l.icp_tier, l.region_query, l.category_query]
+    return [l.name, l.address, l.phone, l.email, l.website, l.competitor_system, l.pain_points,
+        l.notes, l.status, l.opening_status, l.icp_tier, l.region_query, l.category_query, l.lead_source]
         .filter(Boolean).join(" ").toLowerCase();
 }
 
@@ -356,6 +361,7 @@ function buildRow(lead) {
         <td>${escapeHtml(lead.name || "")}</td>
         <td class="wrap">${escapeHtml(lead.address || "")}</td>
         <td>${escapeHtml(lead.phone || "")}</td>
+        <td>${lead.email ? `<a href="mailto:${escapeHtml(lead.email)}">${escapeHtml(lead.email)}</a>` : ""}</td>
         <td>${website}</td>
         <td>${mapsLink}</td>
         <td><strong>${lead.icp_score != null ? lead.icp_score + " %" : ""}</strong></td>
@@ -369,6 +375,7 @@ function buildRow(lead) {
         <td class="status-cell"></td>
         <td class="notes-cell"></td>
         <td>${escapeHtml(formatFirstSeen(lead.first_seen))}</td>
+        <td>${escapeHtml(lead.lead_source || "Google Maps API")}</td>
         <td class="hide-cell"></td>
     `;
     Array.from(tr.children).forEach((td, i) => { td.dataset.col = COLUMN_IDS[i]; });

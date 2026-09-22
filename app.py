@@ -197,8 +197,9 @@ def api_hide_before():
 @app.route("/api/recheck", methods=["POST"])
 def api_recheck():
     """Liest die Website aller Leads erneut (ohne Google-Aufrufe), ergaenzt erkannte Systeme in der Spalte
-    'System', bestimmt die Ketten neu und berechnet den Score neu. Bereits erkannte Systeme bleiben erhalten,
-    Status/Notizen/Ausgeblendet bleiben unberuehrt. Undo-faehig."""
+    'System' und eine Kontakt-E-Mail (falls noch keine vorhanden), bestimmt die Ketten neu und berechnet den
+    Score neu. Bereits erkannte Systeme/E-Mails bleiben erhalten, Status/Notizen/Ausgeblendet bleiben
+    unberuehrt. Undo-faehig."""
     all_leads = db.get_all_leads(include_hidden=True)
     with_site = [l for l in all_leads if l.get("website")]
 
@@ -213,14 +214,16 @@ def api_recheck():
         systems = (lead_logic.merge_systems(old_systems, lead_logic.detect_competitor(lead["website"], html, []))
                    if html else old_systems)
         chain = int(chain_counts.get(lead["place_id"], 1) >= 2)
-        if systems == old_systems and chain == int(bool(lead.get("chain_flag"))):
+        old_email = lead.get("email") or ""
+        email = old_email or (lead_logic.detect_email(lead["website"], html) if html else "")
+        if systems == old_systems and chain == int(bool(lead.get("chain_flag"))) and email == old_email:
             continue
         pain_points = [p for p in (lead.get("pain_points") or "").split(", ") if p]
         icp_score, icp_tier = lead_logic.compute_icp_score(
             category=lead["category_query"], rating_count=lead.get("rating_count") or 0, competitor=systems,
             chain_flag=bool(chain), pain_points=pain_points, opening_status=lead.get("opening_status") or "Etabliert")
         fields = {"competitor_system": systems, "chain_flag": chain, "icp_score": icp_score, "icp_tier": icp_tier,
-                  "score": lead_logic.compute_score(systems, bool(lead.get("likely_new")))}
+                  "score": lead_logic.compute_score(systems, bool(lead.get("likely_new"))), "email": email}
         previous.append({"place_id": lead["place_id"], "previous": {k: lead.get(k) for k in fields}})
         updates.append((lead["place_id"], fields))
 
