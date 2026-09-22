@@ -6,6 +6,83 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+{% macro info_box() %}
+<details class="info-box">
+    <summary>ℹ️ Erklärung: Score, Farben und Spalten (aufklappen)</summary>
+    <div class="info-grid">
+
+        <div class="info-card">
+            <h4>ICP-Score</h4>
+            <p>Zeigt, <strong>wie dringend du einen Betrieb anrufen solltest</strong>. Skala von 0 bis 100 %,
+                <strong>höher ist immer besser</strong>.</p>
+            <ul>
+                <li><strong>100 %</strong> = perfekter Fit, sofort anrufen</li>
+                <li><strong>0 %</strong> = ignorieren</li>
+            </ul>
+            <p class="info-note">Der Wert entsteht aus: Branche, kein Buchungssystem erkannt, Bewertungsanzahl,
+                Filialkette, Pain-Points und Eröffnungsstatus.</p>
+        </div>
+
+        <div class="info-card">
+            <h4>Farbe (Tier)</h4>
+            <p>Die Zeilenfarbe zeigt die Priorität auf einen Blick:</p>
+            <ul class="info-legend">
+                <li><span class="legend-swatch tier-A"></span> <strong>A, grün</strong>: ab 65 %, heiß, zuerst anrufen</li>
+                <li><span class="legend-swatch tier-B"></span> <strong>B, gelb</strong>: 40 bis 64 %, mittel</li>
+                <li><span class="legend-swatch tier-C"></span> <strong>C, rot</strong>: unter 40 %, niedrige Priorität</li>
+            </ul>
+        </div>
+
+        <div class="info-card">
+            <h4>Spalte "Eröffnung"</h4>
+            <ul>
+                <li><strong>Bald eröffnend</strong> (+20 Punkte): Google führt den Betrieb als künftige Eröffnung.
+                    Hat sehr wahrscheinlich noch kein Buchungssystem.</li>
+                <li><strong>Neu eröffnet</strong> (+15 Punkte): läuft laut Google, hat aber weniger als 5 Bewertungen.
+                    Das ist eine Schätzung, kein Beweis.</li>
+                <li><strong>Etabliert</strong> (kein Bonus): alle übrigen Betriebe.</li>
+            </ul>
+        </div>
+
+        <div class="info-card">
+            <h4>Weitere Spalten</h4>
+            <ul>
+                <li><strong>System</strong>: erkanntes Buchungssystem (z. B. Treatwell, Doctolib). "—" heißt: keins
+                    gefunden (+25 Punkte). Geprüft werden Startseite und maximal 5 Bewertungen. Im Filter steht hinter
+                    jedem System, wie viele Leads dieser Tabelle es haben.</li>
+                <li><strong>Kette?</strong>: "Ja (3)" heißt: dieser Betrieb gehört zu einer Marke mit 3 bekannten Standorten
+                    in deiner Datenbank. Erkannt an gleichem Markennamen oder gleicher Website (+15 Punkte).</li>
+                <li><strong>Pain-Points</strong>: Probleme, über die sich Kunden in Bewertungen beschweren
+                    (+10 Punkte).</li>
+                <li><strong># Reviews</strong>: Anzahl der Google-Bewertungen (ab 3: +10, ab 20: +20 Punkte).</li>
+                <li><strong>Offen</strong>: ob der Betrieb zum Zeitpunkt der Suche geöffnet war.</li>
+                <li><strong>In DB seit</strong>: wann dieses Tool den Betrieb zum ersten Mal gefunden hat.
+                    Das ist <em>nicht</em> das Eröffnungsdatum bei Google (das liefert die API nicht).</li>
+            </ul>
+        </div>
+
+    </div>
+</details>
+{% endmacro %}
+{% macro table_toolbar(p) %}
+    <div class="table-toolbar">
+        <div class="toolbar-controls">
+            <label>Sortieren:
+                <select id="{{ p }}SortSelect">
+                    <option value="icp_score">ICP-Score</option>
+                    <option value="rating_count">Bewertungsanzahl</option>
+                    <option value="name">Name</option>
+                    <option value="first_seen">Zuerst gefunden</option>
+                </select>
+            </label>
+            <button id="{{ p }}SortDirBtn" class="secondary" title="Sortierrichtung umschalten">⬇ absteigend</button>
+            <button id="{{ p }}ResetColumnsBtn" class="secondary" title="Spalten wieder in die Standardreihenfolge bringen">Spalten zurücksetzen</button>
+            <button id="{{ p }}ExportCsv" title="Exportiert die Leads, die in dieser Tabelle gerade sichtbar sind">Export CSV</button>
+            <button id="{{ p }}ExportXlsx" title="Exportiert die Leads, die in dieser Tabelle gerade sichtbar sind">Export Excel</button>
+            <button id="{{ p }}ExportHubspot" title="Exportiert die Leads, die in dieser Tabelle gerade sichtbar sind">Export HubSpot</button>
+        </div>
+    </div>
+{% endmacro %}
 <div id="toast" class="toast hidden"></div>
 <header>
     <h1>Shore Lead Finder</h1>
@@ -35,7 +112,7 @@
             <label for="region">Region / Stadt / Bezirk / PLZ (mehrere mit Komma trennen)</label>
             <input type="text" id="region" placeholder="z.B. Berlin, München, Wien, Zürich">
         </div>
-        <div class="field small">
+        <div class="field medium">
             <label for="radiusSelect">Umkreis</label>
             <select id="radiusSelect">
                 <option value="0">0 km (ganzes Gebiet)</option>
@@ -83,12 +160,23 @@
         </div>
         <p class="hint">Blendet alle Leads aus, die an oder vor diesem Datum zuerst gefunden wurden ("In DB seit").
             Nützlich, um deinen aktuellen HubSpot-Stand einmalig aus der Liste zu entfernen.</p>
+        <div class="search-row">
+            <div class="field button-field">
+                <button id="recheckBtn" class="secondary">Erkennung für alle Leads neu prüfen</button>
+            </div>
+        </div>
+        <p class="hint">Liest die Website aller Leads erneut und trägt erkannte Buchungssysteme in die Spalte "System"
+            ein (z. B. Doctolib, Jameda, Shore). Danach wird der Score neu berechnet. Bereits erkannte Systeme bleiben
+            erhalten, Status und Notizen werden nicht angefasst. Verursacht keine Google-Kosten, dauert ca. 1 Minute
+            und lässt sich im Aktivitäts-Log rückgängig machen.</p>
     </details>
 </section>
 
 <section class="card">
     <details class="table-section" open>
         <summary><h2>🆕 Neu <span id="neuCount"></span></h2></summary>
+        {{ table_toolbar("neu") }}
+        {{ info_box() }}
         <input type="text" class="table-search" id="neuSearch" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
         <div class="table-wrap">
             <table class="leads-table" id="neuTable">
@@ -109,42 +197,14 @@
 <section class="card">
     <details class="table-section" open>
     <summary><h2>📁 Alt <span id="leadCount"></span></h2></summary>
-    <div class="table-toolbar">
-        <div class="toolbar-controls">
-            <label>Sortieren:
-                <select id="sortSelect">
-                    <option value="icp_score">ICP-Score</option>
-                    <option value="rating_count">Bewertungsanzahl</option>
-                    <option value="name">Name</option>
-                    <option value="first_seen">Zuerst gefunden</option>
-                </select>
-            </label>
-            <button id="sortDirBtn" class="secondary" title="Sortierrichtung umschalten">⬇ absteigend</button>
-            <button id="exportCsv">Export CSV</button>
-            <button id="exportXlsx">Export Excel</button>
-            <button id="exportHubspot">Export HubSpot</button>
-        </div>
-    </div>
+    {{ table_toolbar("alt") }}
     <input type="text" class="table-search" id="altSearch" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
-    <p class="hint">Spaltenfilter direkt in der Tabellen-Kopfzeile (zweite Zeile) — funktioniert in allen drei Tabellen.</p>
-    <details class="info-box">
-        <summary>ℹ️ Was bedeuten ICP-Score, Tier-Farbe & Eröffnung? (aufklappen)</summary>
-        <div class="info-box-content">
-            <p><strong>ICP-Score (0–100 %):</strong> Anruf-Priorität. 100 % = perfekter Fit, sofort anrufen.
-                0 % = ignorieren. Höher ist immer besser.</p>
-            <p><strong>Tier-Farbe:</strong>
-                <span class="legend-item"><span class="legend-swatch tier-A"></span> A/Grün = heiß (≥65 %)</span>
-                <span class="legend-item"><span class="legend-swatch tier-B"></span> B/Gelb = mittel (40–64 %)</span>
-                <span class="legend-item"><span class="legend-swatch tier-C"></span> C/Rot = niedrig (&lt;40 %)</span>
-            </p>
-            <p><strong>Spalte "Eröffnung":</strong>
-                <em>Bald eröffnend</em> = eröffnet erst noch, hat garantiert kein Buchungssystem (+20 Punkte) ·
-                <em>Neu eröffnet</em> = aktiv, aber unter 5 Bewertungen, vermutlich frisch (+15 Punkte, Schätzung) ·
-                <em>Etabliert</em> = alles andere, kein Bonus.</p>
-            <p><strong>"In DB seit":</strong> Datum, an dem dieses Tool den Laden zuerst gefunden hat — nicht das
-                echte Google-Eröffnungsdatum (das gibt's über die API nicht).</p>
-        </div>
-    </details>
+    <p class="hint">Spaltenfilter direkt in der Tabellen-Kopfzeile (zweite Zeile) — funktioniert in allen drei Tabellen.
+        Spalten lassen sich verschieben: Überschrift mit der Maus anklicken, halten und nach links oder rechts ziehen.
+        Die Reihenfolge gilt für alle drei Tabellen und bleibt im Browser gespeichert.
+        Die Export-Knöpfe von "Neu" und "Alt" exportieren genau die Leads, die in der jeweiligen Tabelle gerade
+        sichtbar sind (mit Suche, Filtern und Sortierung). Exportierte Leads wandern danach nach "Exportiert".</p>
+    {{ info_box() }}
     <div class="table-wrap">
         <table id="altTable">
             <thead>
@@ -179,6 +239,7 @@
         <summary><h2>📤 Exportiert / In HubSpot <span id="exportedCount"></span></h2></summary>
         <p class="hint">Leads, die exportiert wurden (automatisch) oder per "In HubSpot"-Button markiert wurden.
             "Einblenden" schickt sie zurück nach "Alt".</p>
+        {{ info_box() }}
         <input type="text" class="table-search" id="exportedSearch" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
         <div class="table-wrap">
             <table class="leads-table" id="exportedTable">

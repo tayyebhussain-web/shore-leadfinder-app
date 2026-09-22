@@ -5,11 +5,16 @@ Review-Pain-Points, Score, Filialketten). Wird von app.py verwendet.
 
 import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
+from itertools import combinations
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 DETAILS_URL = "https://places.googleapis.com/v1/places/{place_id}"
@@ -37,7 +42,7 @@ ICP_CATEGORIES = [
 
 COMPETITOR_SIGNATURES = {
     "Fresha": ["fresha.com", "fresha.de", "book with fresha", "powered by fresha"],
-    "Treatwell": ["treatwell.de", "treatwell.com", "treatwell.at", "treatwell.ch"],
+    "Treatwell": ["treatwell.de", "treatwell.com", "treatwell.at", "treatwell.ch", "trea.tw"],
     "Planity": ["planity.com"],
     "SumUp": ["sumup.com", "sumup.de", "pay.sumup"],
     "Calendly": ["calendly.com"],
@@ -51,7 +56,18 @@ COMPETITOR_SIGNATURES = {
     "Salonkee": ["salonkee.de", "salonkee.lu", "salonkee.com"],
     "Timely": ["gettimely.com"],
     "Vagaro": ["vagaro.com"],
-    "Shore (bereits Kunde)": ["shore.com/book", "book.shore.com", "shore-booking"],
+    "Studiobookr": ["studiobookr.com"],
+    # Zahnarzt-/Arztpraxen (Doctolib, Dr. Flex, Jameda, Studiobookr in den eigenen Daten gesehen;
+    # Samedi, Clickdoc, Doctena, Dentolo dort nicht gesehen, aber bekannte Anbieter)
+    "Doctolib": ["doctolib.de", "doctolib.com", "doctolib.fr"],
+    "Jameda": ["jameda.de", "jameda-elements.de"],
+    "Dr. Flex": ["dr-flex.de", "dr-flex", "drflex"],
+    "Samedi": ["samedi.de"],
+    "Clickdoc": ["clickdoc.de"],
+    "Doctena": ["doctena.com", "doctena.de", "doctena.lu"],
+    "Dentolo": ["dentolo.de"],
+    # Echte Shore-Buchungsadresse: connect.shore.com/bookings/<name>/services
+    "Shore (bereits Kunde)": ["connect.shore.com", "shore.com/bookings"],
 }
 
 # --- ICP-Scoring ---------------------------------------------------------
@@ -234,12 +250,16 @@ def get_reviews(api_key: str, place_id: str) -> list:
 def fetch_website_html(url: str) -> str:
     if not url:
         return ""
-    try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code == 200:
-            return resp.text.lower()
-    except requests.RequestException:
-        pass
+    # Bei Zertifikatsfehlern (z. B. abgelaufenes Zertifikat) einmal ohne Pruefung lesen: es wird nur
+    # oeffentliches HTML gelesen, es werden keine Zugangsdaten gesendet.
+    for verify in (True, False):
+        try:
+            resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}, verify=verify)
+            return resp.text.lower() if resp.status_code == 200 else ""
+        except requests.exceptions.SSLError:
+            continue
+        except requests.RequestException:
+            return ""
     return ""
 
 
@@ -251,11 +271,16 @@ def detect_competitor(website: str, website_html: str, review_texts: list) -> st
     haystacks = [website.lower() if website else "", website_html]
     haystacks.extend(t.lower() for t in review_texts)
     combined = " ".join(haystacks)
-    for system, signatures in COMPETITOR_SIGNATURES.items():
-        for sig in signatures:
-            if sig in combined:
-                return system
-    return ""
+    found = [system for system, signatures in COMPETITOR_SIGNATURES.items()
+             if any(sig in combined for sig in signatures)]
+    return ", ".join(found)
+
+
+def merge_systems(old: str, new: str) -> str:
+    """Vereinigt zwei kommagetrennte Systemlisten ohne Dubletten, sortiert nach COMPETITOR_SIGNATURES."""
+    names = {s.strip() for s in f"{old or ''},{new or ''}".split(",") if s.strip()}
+    order = list(COMPETITOR_SIGNATURES)
+    return ", ".join(sorted(names, key=lambda s: order.index(s) if s in order else len(order)))
 
 
 def detect_pain_points(review_texts: list) -> list:
@@ -277,25 +302,113 @@ def compute_score(competitor: str, likely_new: bool) -> str:
     return "Niedrig"
 
 
-def normalize_name_for_chain_check(name: str) -> str:
-    n = name.lower()
-    n = re.sub(r"\b(gmbh|ug|e\.?k\.?|inh\.?|filiale|standort)\b", "", n)
-    n = re.sub(r"\d+", "", n)
-    n = re.sub(r"[^a-z\s]", "", n)
-    return " ".join(n.split())
+# --- Kettenerkennung -----------------------------------------------------
+# Kette = mindestens 2 bekannte Standorte derselben Marke. Zwei Betriebe gehoeren zusammen, wenn
+#   (1) ihre Website dieselbe Adresse hat, oder
+#   (2) ihre Website denselben Markenanfang hat (dental21-kudamm.de / dental21-pankow.de), oder
+#   (3) ihr Markenkern im Namen gleich ist (nach Entfernen von Rechtsform, Ortsnamen und Allerweltswoertern),
+#       ausser beide Websites existieren und widersprechen sich.
+# Gezaehlt wird ueber die ganze Datenbank, nicht nur ueber einen Suchlauf.
+CHAIN_STOPWORDS = set("""
+gmbh ug ek inh filiale standort mvz ohg kg ag co und and the die der das ihr ihre in im am an bei by von vom zu zum zur
+fuer für mit ohne aus berlin wien münchen muenchen zürich zuerich hamburg köln koeln frankfurt stuttgart düsseldorf
+duesseldorf leipzig dresden hannover bremen mitte pankow charlottenburg schöneberg schoeneberg kreuzberg friedrichshain
+neukölln neukoelln prenzlauer berg wedding steglitz spandau tempelhof lichtenberg reinickendorf zehlendorf wilmersdorf
+moabit kudamm nails nail beauty kosmetik kosmetikstudio kosmetikinstitut studio salon spa wellness massage friseur
+friseure coiffeur hair haar haare barber lashes lash brows brow cosmetic cosmetics tattoo piercing zahnarzt zahnärzte
+zahnaerzte zahnarztpraxis zahnzentrum zahnmedizin zahnaufhellung bleaching praxis clinic klinik center zentrum lounge bar
+boutique institut physiotherapie dr med dent prof smile style glow schön schoen team house haus world nagelstudio
+""".split())
+# Adressen, die sich viele fremde Betriebe teilen (Social Media, Website-Baukaesten, Verzeichnisse, Kurzlinks).
+# Gleiche Adresse hier beweist keine Kette. Suffix-Vergleich: "x.ivof.com" gehoert zu "ivof.com".
+CHAIN_SHARED_DOMAINS = ("facebook.com", "instagram.com", "linktr.ee", "google.com", "business.site", "wa.me",
+                        "tiktok.com", "trea.tw", "ivof.com", "wixsite.com", "jimdofree.com", "jimdosite.com",
+                        "squarespace.com", "weebly.com", "godaddysites.com", "strikingly.com", "carrd.co",
+                        "beacons.ai", "wordpress.com", "blogspot.com", "myshopify.com")
 
 
-def flag_chains(leads: list) -> None:
-    """leads: list of dicts with 'name' key; sets 'chain_flag' in place."""
-    groups = defaultdict(list)
+def _name_core(name: str) -> str:
+    tokens = [t for t in re.findall(r"[a-zäöüß0-9]+", (name or "").lower()) if len(t) > 1 and t not in CHAIN_STOPWORDS]
+    return " ".join(sorted(tokens))
+
+
+def _chain_host(url: str) -> str:
+    """Website-Adresse ohne www. Gibt "" zurueck fuer Social-Media-Seiten und Buchungsportale (dort teilen
+    sich viele fremde Betriebe dieselbe Adresse)."""
+    if not url:
+        return ""
+    host = urlparse(url if "//" in url else "//" + url).netloc.lower().split(":")[0]
+    host = host[4:] if host.startswith("www.") else host
+    if any(host == d or host.endswith("." + d) for d in CHAIN_SHARED_DOMAINS):
+        return ""
+    if any(sig in host for sigs in COMPETITOR_SIGNATURES.values() for sig in sigs if "." in sig):
+        return ""
+    return host
+
+
+def _domain_brand(host: str) -> str:
+    """Markenanfang einer Adresse mit Bindestrich: dental21-kudamm.de -> dental21."""
+    parts = host.split(".")
+    label = parts[-2] if len(parts) >= 2 else ""
+    brand = label.split("-")[0] if "-" in label else ""
+    return brand if len(brand) >= 5 and brand not in CHAIN_STOPWORDS and not brand.isdigit() else ""
+
+
+def chain_sizes(leads) -> dict:
+    """leads: Iterable von Dicts mit place_id, name, website. Gibt {place_id: Anzahl Standorte der Gruppe} zurueck
+    (1 = Einzelbetrieb)."""
+    items = list(leads)
+    parent = list(range(len(items)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    hosts = [_chain_host(l.get("website")) for l in items]
+    brands = [_domain_brand(h) for h in hosts]
+    cores = [_name_core(l.get("name")) for l in items]
+
+    buckets = defaultdict(list)
+    for i in range(len(items)):
+        if hosts[i]:
+            buckets[("host", hosts[i])].append(i)
+        if brands[i]:
+            buckets[("brand", brands[i])].append(i)
+    for members in buckets.values():
+        for other in members[1:]:
+            union(members[0], other)
+
+    by_core = defaultdict(list)
+    for i, core in enumerate(cores):
+        if core:
+            by_core[core].append(i)
+    for members in by_core.values():
+        for a, b in combinations(members, 2):
+            websites_contradict = hosts[a] and hosts[b] and hosts[a] != hosts[b] and (not brands[a] or brands[a] != brands[b])
+            if not websites_contradict:
+                union(a, b)
+
+    group_size = Counter(find(i) for i in range(len(items)))
+    return {items[i]["place_id"]: group_size[find(i)] for i in range(len(items))}
+
+
+def flag_chains(leads: list, known: list = None) -> None:
+    """Setzt chain_flag und chain_count an den neuen Leads (in-place). known = bereits gespeicherte Leads,
+    damit auch Standorte aus frueheren Suchen mitzaehlen."""
+    combined = {l["place_id"]: l for l in (known or [])}
+    combined.update({l["place_id"]: l for l in leads})
+    sizes = chain_sizes(combined.values())
     for lead in leads:
-        key = normalize_name_for_chain_check(lead["name"])
-        if key:
-            groups[key].append(lead)
-    for group in groups.values():
-        if 3 <= len(group) <= 9:
-            for lead in group:
-                lead["chain_flag"] = True
+        count = sizes.get(lead["place_id"], 1)
+        lead["chain_count"] = count
+        lead["chain_flag"] = count >= 2
 
 
 def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
@@ -344,10 +457,10 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
     }
 
 
-def finalize_leads(leads: list) -> None:
+def finalize_leads(leads: list, known: list = None) -> None:
     """Nach enrich_place() fuer eine ganze Liste aufrufen: setzt Filialketten-Flag
     und berechnet danach den ICP-Score (der die Ketten-Info braucht)."""
-    flag_chains(leads)
+    flag_chains(leads, known)
     for lead in leads:
         pain_points = [p for p in (lead.get("pain_points") or "").split(", ") if p]
         icp_score, icp_tier = compute_icp_score(

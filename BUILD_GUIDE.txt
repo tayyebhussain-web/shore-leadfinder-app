@@ -123,9 +123,9 @@ CET = ZoneInfo("Europe/Berlin")
 ICP_CATEGORIES = ["Kosmetikstudio", "Friseur", "Nagelstudio", "Botox / Medical Beauty", "Bleaching-Zentrum",
   "Wellness / Spa", "Brautmode", "Physiotherapie", "Tierarzt / Hundesalon", "Tattoo-Studio", "Massage-Praxis"]
 
-COMPETITOR_SIGNATURES (Reihenfolge = Prioritaet, erster Treffer gewinnt):
+COMPETITOR_SIGNATURES (Reihenfolge = Anzeige-Reihenfolge in der Spalte; ALLE Treffer werden angezeigt):
   "Fresha":    ["fresha.com", "fresha.de", "book with fresha", "powered by fresha"]
-  "Treatwell": ["treatwell.de", "treatwell.com", "treatwell.at", "treatwell.ch"]
+  "Treatwell": ["treatwell.de", "treatwell.com", "treatwell.at", "treatwell.ch", "trea.tw"]   (trea.tw = Kurzlink)
   "Planity":   ["planity.com"]
   "SumUp":     ["sumup.com", "sumup.de", "pay.sumup"]
   "Calendly":  ["calendly.com"]
@@ -139,7 +139,18 @@ COMPETITOR_SIGNATURES (Reihenfolge = Prioritaet, erster Treffer gewinnt):
   "Salonkee":  ["salonkee.de", "salonkee.lu", "salonkee.com"]
   "Timely":    ["gettimely.com"]
   "Vagaro":    ["vagaro.com"]
-  "Shore (bereits Kunde)": ["shore.com/book", "book.shore.com", "shore-booking"]
+  "Studiobookr": ["studiobookr.com"]
+  "Doctolib":  ["doctolib.de", "doctolib.com", "doctolib.fr"]
+  "Jameda":    ["jameda.de", "jameda-elements.de"]
+  "Dr. Flex":  ["dr-flex.de", "dr-flex", "drflex"]
+  "Samedi":    ["samedi.de"]
+  "Clickdoc":  ["clickdoc.de"]
+  "Doctena":   ["doctena.com", "doctena.de", "doctena.lu"]
+  "Dentolo":   ["dentolo.de"]
+  "Shore (bereits Kunde)": ["connect.shore.com", "shore.com/bookings"]
+  (Echte Shore-Buchungsadresse: connect.shore.com/bookings/<name>/services. Die frueheren Muster shore.com/book,
+  book.shore.com, shore-booking waren geraten und haben nie getroffen. In den eigenen Daten gesehen: Doctolib, Jameda,
+  Dr. Flex, Studiobookr, Shore. Samedi, Clickdoc, Doctena, Dentolo dort nicht gesehen, nur bekannte Anbieter.)
 
 CATEGORY_WEIGHTS (Punkte 0..30; Annahme zu Ticketgroesse/Zahlungsverhalten, NICHT durch Zahlen belegt,
 wichtigster Hebel fuer den Score, mit echten Abschluessen kalibrieren):
@@ -191,7 +202,10 @@ get_reviews(api_key, place_id) -> list[str]                [Google-spezifisch]
 
 fetch_website_html(url) -> str
   Leere URL -> "". Sonst requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}).
-  Status 200 -> resp.text.lower(); Status != 200 oder RequestException -> "". Nur die Startseite, keine Unterseiten.
+  Status 200 -> resp.text.lower(); Status != 200 oder RequestException -> "". Bei SSLError (z. B. abgelaufenes
+  Zertifikat) wird EINMAL mit verify=False wiederholt (nur oeffentliches HTML, keine Zugangsdaten). Nur die
+  Startseite, keine Unterseiten. Ein leerer Rueckgabewert kann "nicht lesbar" oder "keine Buchung" bedeuten und
+  ist von aussen nicht unterscheidbar (bekanntes Problem, siehe Abschnitt 16).
 
 detect_likely_new(rating_count, business_status) -> bool
   business_status == "OPERATIONAL" and rating_count < 5. Schaetzung, kein echtes Eroeffnungsdatum.
@@ -204,8 +218,12 @@ format_opening_date(dict | None) -> str
 
 detect_competitor(website, website_html, review_texts) -> str
   Haystack = website.lower() + website_html + alle Review-Texte lowercase, mit Leerzeichen verbunden.
-  Fuer jedes System in Dict-Reihenfolge: kommt eine Signatur als Substring vor -> Systemname zurueck. Sonst "".
-  Es werden nur Domains und Phrasen gematcht, keine blossen Markennamen im Fliesstext.
+  Rueckgabe: ALLE Systeme, deren Signatur als Substring vorkommt, in Dict-Reihenfolge, mit ", " verbunden
+  (z. B. "Doctolib, Jameda"). Keine Treffer -> "". Es werden nur Domains und Phrasen gematcht, keine blossen
+  Markennamen im Fliesstext. Eine in die Website eingebaute EIGENE Buchung (kein Anbieter-Link) wird NICHT erkannt.
+
+merge_systems(old, new) -> str
+  Vereinigt zwei kommagetrennte Systemlisten ohne Dubletten, sortiert nach COMPETITOR_SIGNATURES-Reihenfolge.
 
 detect_pain_points(review_texts) -> list[str]
   Texte lowercase zusammenfuegen. Pro Label reicht der erste Regex-Treffer (re.search, dann break). Liste der Labels.
@@ -225,13 +243,30 @@ compute_icp_score(category, rating_count, competitor, chain_flag, pain_points, o
   tier   = "A" wenn score >= 65, "B" wenn score >= 40, sonst "C"
   Semantik: hoeher = besser, 100 % = perfekter Fit, sofort anrufen.
 
-normalize_name_for_chain_check(name) -> str
-  lowercase; Regex \b(gmbh|ug|e\.?k\.?|inh\.?|filiale|standort)\b entfernen; alle Ziffern entfernen;
-  alles ausser a-z und Whitespace entfernen; Whitespace normalisieren.
+KETTENERKENNUNG. Kette = mindestens 2 bekannte Standorte derselben Marke, gezaehlt ueber die GANZE Datenbank
+(auch ausgeblendete Leads, auch frueher gefundene). Es gibt keine Obergrenze mehr (frueher 3 bis 9).
+Zwei Betriebe gehoeren zusammen, wenn eine dieser Regeln zutrifft (Union-Find, Gruppengroesse = Anzahl):
+  1. gleiche Website-Adresse (ohne www)
+  2. gleicher Markenanfang der Website-Adresse bei Bindestrich: dental21-kudamm.de / dental21-pankow.de -> "dental21"
+     (mind. 5 Zeichen, kein Allerweltswort, keine reine Zahl)
+  3. gleicher Markenkern im Namen, ausser beide Websites existieren und widersprechen sich (verschiedene Adressen und
+     verschiedener Markenanfang). Markenkern = Namens-Woerter (a-z, ae, oe, ue, ss, Ziffern bleiben erhalten!) ohne
+     CHAIN_STOPWORDS (Rechtsformen, Ortsnamen/Bezirke, Branchenwoerter wie nails, beauty, zahnarzt, friseur),
+     alphabetisch sortiert.
+Adressen aus CHAIN_SHARED_DOMAINS (Social Media, Website-Baukaesten, Verzeichnisse, Kurzlinks wie trea.tw, ivof.com)
+und Buchungsportale aus COMPETITOR_SIGNATURES zaehlen bei Regel 1 und 2 nicht (dort teilen sich fremde Betriebe die
+Adresse). Die alte Regel (Ziffern loeschen, exakt gleicher Name, nur im Suchlauf) hat in 193 Leads nie einen Treffer
+geliefert und Dental21 nicht erkannt.
 
-flag_chains(leads) -> None   (in-place)
-  Gruppiere nach normalisiertem Namen (leere Keys ignorieren). Gruppengroesse 3 bis 9 -> chain_flag = True.
-  Nur innerhalb des aktuellen Batches (eine Suche mit einer Region).
+_name_core(name), _chain_host(url), _domain_brand(host): Hilfsfunktionen zu den Regeln oben.
+
+chain_sizes(leads) -> {place_id: Anzahl}      (1 = Einzelbetrieb)
+  leads: Dicts mit place_id, name, website. Wird bei Anzeige (/api/leads), Export und Nachpruefung neu berechnet.
+
+flag_chains(leads, known=None) -> None   (in-place)
+  Setzt chain_count und chain_flag (= Anzahl >= 2) an den NEUEN Leads. known = bereits gespeicherte Leads, damit
+  Standorte aus frueheren Suchen mitzaehlen. Aeltere Geschwister-Leads werden erst beim naechsten Nachpruefen
+  aktualisiert (gespeichertes chain_flag und Score), die Anzeige "Ja (n)" ist dagegen immer aktuell.
 
 enrich_place(api_key, place, region, category) -> dict     (Anfang Google-spezifisch)
   Liest die Google-Felder (Mapping Abschnitt 2), ruft get_reviews und (nur bei Website) fetch_website_html auf,
@@ -242,7 +277,7 @@ enrich_place(api_key, place, region, category) -> dict     (Anfang Google-spezif
   icp_score=0, icp_tier="", status="Neu", notes="".
 
 finalize_leads(leads) -> None   (in-place)
-  ERST flag_chains(leads), DANN pro Lead compute_icp_score(...) (pain_points per split(", ") zurueck in Liste),
+  ERST flag_chains(leads, known), DANN pro Lead compute_icp_score(...) (pain_points per split(", ") zurueck in Liste),
   icp_score/icp_tier setzen. Die Reihenfolge ist zwingend, weil der Score chain_flag braucht.
 
 
@@ -356,16 +391,28 @@ POST /api/leads/hide-before   Body {date: "YYYY-MM-DD"}
   Blendet aus, loggt "bulk_hide" (undoable, Payload = alle betroffenen Leads). Antwort {hidden: n, log_id}.
   Leeres Datum -> 400.
 
+POST /api/recheck
+  Liest die Website ALLER Leads (auch ausgeblendete) parallel (8 Threads, keine Google-Aufrufe), ergaenzt erkannte
+  Systeme per merge_systems (Bestehendes bleibt erhalten, nichts wird geloescht), bestimmt die Ketten ueber alle
+  Leads neu (chain_sizes, auch fuer Leads ohne Website) und berechnet icp_score, icp_tier und Legacy-Ampel neu.
+  Status, Notizen, hidden bleiben unberuehrt. Schreibt einen undoable Log "recheck" (Payload: alte Werte von
+  competitor_system, chain_flag, icp_score, icp_tier, score). Antwort {checked = alle Leads, changed, unreadable}.
+  Dauer gemessen: 164 Websites in ca. 21 s. Einzelne Websites sind manchmal nicht lesbar (Timeout), das Ergebnis
+  kann zwischen zwei Laeufen um wenige Leads schwanken.
+
 GET /api/logs?limit=50: neueste zuerst.
 
 POST /api/logs/<id>/undo
   db.undo_log. Bei None -> 400 mit deutscher Meldung. Sonst neuer Log "undo" mit payload=redo_payload und
   undoable=True. Undo vom Undo ist also Redo, die Kette ist unbegrenzt. Antwort {ok, count}.
 
-GET /api/export?format=csv|xlsx|hubspot&hot_only=0
-  rows = get_all_leads(hot_only) (nur nicht ausgeblendete). Diese werden per hide_leads ausgeblendet und als
-  "export" geloggt (undoable). Danach send_file. Die Ausblendung passiert beim Abruf, auch wenn der Download
-  nicht abgeschlossen wird. Es werden IMMER alle nicht ausgeblendeten Leads exportiert (Filter der UI wirken nicht).
+POST /api/export   Formularfelder: format = csv|xlsx|hubspot, ids = place_ids kommagetrennt in Anzeigereihenfolge
+  Nur POST (der Export hat eine Nebenwirkung, GET ergibt 405). Exportiert GENAU die uebergebenen Leads: rows entstehen
+  aus den nicht ausgeblendeten Leads in der Reihenfolge von ids; bereits ausgeblendete oder unbekannte ids werden
+  ignoriert; ergibt das keine Zeile -> 400 {"error": ...}. Diese Leads werden per hide_leads ausgeblendet und als
+  "export" geloggt (undoable), danach send_file (Download). Die Ausblendung passiert beim Abruf, auch wenn der
+  Download nicht abgeschlossen wird. Das Frontend schickt die in der Tabelle sichtbaren Leads (nach Suche, Filtern,
+  Sortierung) per unsichtbarem Formular, damit die Seite nicht verlassen wird.
 
 
 ======================================================================
@@ -376,7 +423,7 @@ DISPLAY_COLUMNS (Feld / Ueberschrift), in dieser Reihenfolge:
   name/Name, address/Adresse, phone/Telefon, website/Website, google_search_url/"Google Profil (Suche)",
   icp_score/ICP-Score, icp_tier/ICP-Tier, competitor_system/"Erkanntes System", score/Konkurrenz-Ampel,
   rating_count/"Anzahl Bewertungen", open_now/Geoeffnet, opening_status/Eroeffnungsstatus,
-  opening_date/"Geplantes Eroeffnungsdatum", chain_flag/"Filialkette (3-9)", pain_points/"Review Pain-Points",
+  opening_date/"Geplantes Eroeffnungsdatum", chain_display/"Kette (Standorte)" (Wert "Ja (n)"), pain_points/"Review Pain-Points",
   status/Status, notes/Notiz, region_query/"Gesuchte Region", category_query/"Gesuchte Kategorie",
   first_seen_display/"Erstmals gefunden"
 
@@ -389,7 +436,7 @@ rows_to_xlsx_bytes: Blatt "Leads", Kopfzeile fett, Tier-Zelle eingefaerbt, Pain-
   Spaltenbreite min(maxlaenge + 2, 45). ACHTUNG: aktuell A = rot FF9C9C, B = FFE59C, C = grün D6F0D6 (falsch, siehe 16).
 rows_to_hubspot_csv_bytes: Spalten "Company name, Phone Number, Website URL, Google Profil (Suche), Street Address,
   ICP Score, ICP Tier, Erkanntes Konkurrenzsystem, Status, Notiz". Notiz " | "-verkettet aus Eroeffnungsstatus
-  (mit Datum, wenn nicht "Etabliert"), "Teil einer Filialkette (3-9 Standorte)", "Review Pain-Points: ..." und der
+  (mit Datum, wenn nicht "Etabliert"), "Teil einer Kette (n Standorte)", "Review Pain-Points: ..." und der
   eigenen Notiz.
 timestamped(name, ext): name_YYYYMMDD_HHMMSS.ext (lokale Serverzeit).
 rating wird gespeichert, aber weder angezeigt noch exportiert.
@@ -403,7 +450,8 @@ STATE
   currentLeads[]          alle Leads (inkl. ausgeblendete) aus /api/leads
   newOnlyIds              Set der place_ids der letzten Suche/des letzten Sync; wird jedes Mal KOMPLETT ersetzt;
                           lebt nur im Browser (Reload = leer)
-  sortDescending          true = absteigend
+  sortState               {neu:{key,desc}, alt:{key,desc}}: Sortierung je Tabelle (Standard icp_score, absteigend)
+  visibleIds              {neu:[], alt:[]}: place_ids der zuletzt angezeigten Zeilen je Tabelle (Grundlage des Exports)
   toastTimer
   filterState = {neu:{search:"",cols:{}}, alt:{...}, exported:{...}}   (Filter je Tabelle getrennt)
   STATUS_OPTIONS
@@ -418,6 +466,11 @@ FUNKTIONEN
                        Erzeugt aus COLUMN_FILTERS eine zweite <tr class="filter-row"> im <thead>.
                        text = Input (Event input), numMin = Zahlen-Input (input), select = Dropdown mit "alle" +
                        Optionen (Event change), none = leer. Jede Aenderung setzt state.cols[i], ruft renderAll().
+  updateFilterCounts(state, leads)
+                       Schreibt hinter jede Option von Filtern mit showCounts (aktuell nur "System") die Trefferzahl,
+                       z. B. "Doctolib (0)", "ohne (98)". Gezaehlt wird pro Tabelle unter Beruecksichtigung aller
+                       anderen Filter und der Suche; der eigene Filter wird ignoriert (applyTableFilters mit
+                       skipIndex), damit man sieht, was man bei Auswahl bekaeme. Wird in renderTable aufgerufen.
   searchableText(l)    lowercase-Verkettung aus name, address, phone, website, competitor_system, pain_points,
                        notes, status, opening_status, icp_tier, region_query, category_query.
   applyTableFilters(leads, state)
@@ -425,13 +478,15 @@ FUNKTIONEN
                        ueber col.get(l), text: enthaelt, case-insensitive).
   buildRow(lead)       <tr class="tier-A|B|C">. Status-Dropdown (change -> PATCH, lokal setzen, Toast, loadLogs),
                        Notiz-Input (blur -> PATCH nur bei Aenderung), Website-Link, Google-Suche-Link,
-                       ICP-Score als "NN %", Eroeffnung "status (datum)", Zeit ueber formatFirstSeen.
+                       ICP-Score als "NN %", Kette als "Ja (n)" (aus chain_count, sonst leer), Eroeffnung "status (datum)", Zeit ueber formatFirstSeen.
                        HubSpot-Button: togglet hidden (PATCH, lokal, Toast, renderAll, loadLogs); Label
                        "In HubSpot" bzw. "Einblenden".
-  renderTable(tbodyId, countId, leads, state, useGlobalSort)
-                       Filtern, sortieren, rendern. Titelzaehlung "(gefiltert von gesamt)".
-                       Nur Alt nutzt sortSelect/sortDirBtn (Schluessel icp_score, rating_count, name, first_seen;
-                       fuer die Zeit dient der rohe ISO-String). Neu und Exportiert: fix ICP-Score absteigend.
+  sortRows(rows, cfg)  Schluessel icp_score, rating_count, name, first_seen; desc = absteigend. Bei name bedeutet
+                       absteigend Z bis A (fruehere Fehlversion: A bis Z); fuer die Zeit dient der rohe ISO-String.
+  renderTable(tbodyId, countId, leads, state, tableKey)
+                       Filtern, sortieren, rendern, Titelzaehlung "(gefiltert von gesamt)". tableKey "neu"|"alt":
+                       eigene Sortierung aus sortState und visibleIds wird gesetzt; null (Exportiert): fest ICP-Score
+                       absteigend.
   renderAll()          Einteilung (Abschnitt 12), dann renderTable fuer alle drei.
   updateLead(placeId, changes)   PATCH.
   loadLeads()          GET /api/leads, dann renderAll.
@@ -442,7 +497,36 @@ FUNKTIONEN
   doSearch()           Validierung, POST /api/search, newOnlyIds = new Set(new_place_ids), loadLeads, loadLogs.
   doSync()             analog mit /api/sync.
   doHideBefore()       confirm(), POST /api/leads/hide-before.
-  exportAs(format)     window.location = /api/export?format=...&hot_only=0; nach 1500 ms loadLeads + loadLogs.
+  exportTable(tableKey, format)   Leere Sicht -> Toast "Keine Leads zum Exportieren in dieser Tabelle." (kein Aufruf).
+                       Sonst unsichtbares <form method=POST action=/api/export> mit format und ids (visibleIds der
+                       Tabelle), submit, entfernen; nach 1500 ms loadLeads + loadLogs (die Leads liegen dann in
+                       Exportiert).
+
+SPALTEN PER MAUS VERSCHIEBEN (gilt gleichzeitig fuer alle drei Tabellen, gespeichert im Browser)
+  COLUMN_IDS: 17 feste IDs in Standardreihenfolge (name, address, phone, website, google, score, tier, system,
+    reviews, open, opening, chain, pain, status, notes, since, hubspot). Jede Kopf-, Filter- und Datenzelle traegt
+    data-col mit ihrer ID; Zellen werden immer in Standardreihenfolge erzeugt und danach nach columnOrder sortiert.
+  columnOrder: aktuelle Reihenfolge; localStorage-Schluessel "leadfinder.columnOrder" (JSON-Array). Ungueltige oder
+    kaputte Werte (falsche Laenge, Dubletten, fehlende IDs, kein JSON) ergeben die Standardreihenfolge.
+  sanitizeColumnOrder / loadColumnOrder / saveColumnOrder   Pruefen, Laden, Speichern (Fehler beim Speichern egal).
+  orderAfterDrag(order, draggedId, widths, originLeft, ghostLeft, ghostRight)   Reine Funktion. Die gezogene Spalte
+    folgt der Maus (ghostLeft = Mausposition minus Anfassstelle, ghostRight = ghostLeft + Spaltenbreite). Getauscht wird,
+    sobald ihre VORDERE KANTE die Mitte des Nachbarn erreicht: der Weg haengt nur von der Breite des Nachbarn ab, nicht von
+    der der gezogenen Spalte (Name 665 px + Adresse 147 px: Tausch nach ca. 74 px Mausweg). Mehrere Tausche pro Bewegung
+    moeglich, Spaltenpositionen werden aus widths berechnet (Breiten werden beim Anfassen einmal gemessen).
+    FRUEHERE FEHLVERSION: "Maus muss die Mitte der Nachbarspalte ueberschreiten" - bei breiter gezogener Spalte rund 600 px
+    Mausweg, ohne sichtbare Reaktion. Simulierte Ereignisse hatten das nicht gezeigt.
+  applyOrderToRow(tr, order) / applyColumnOrderEverywhere()   Verschiebt nur die vorhandenen Zellknoten (Eingabefelder,
+    Dropdowns und Buttons behalten ihre Listener); idempotent; Zeilen ohne data-col werden nicht angefasst.
+    Wird am Ende von renderAll() und beim Start aufgerufen, damit die Reihenfolge nach jedem Neuzeichnen bleibt.
+  initColumnDragging(table)   Setzt data-col an den <th> der ersten Kopfzeile, Klasse col-draggable, Titeltext und den
+    pointerdown-Listener. startColumnDrag: pointermove/pointerup/pointercancel haengen am document (nicht am <th>), weil
+    beim Verschieben der Knoten die Zeigererfassung verloren ginge. Ab 5 px Bewegung gilt es als Ziehen (Klick aendert
+    nichts). Waehrend des Ziehens sortieren sich die Spalten live um; body.col-dragging und col-drag-active markieren
+    die gezogene Spalte, ein Schild (div.col-drag-ghost, pointer-events: none) mit dem Spaltennamen haengt am Mauszeiger;
+    beim Loslassen wird das Schild entfernt und die Reihenfolge gespeichert.
+  resetColumnOrder()   Knopf #resetColumnsBtn: Standardreihenfolge, speichern, Toast "Spaltenreihenfolge zurueckgesetzt".
+  Nicht vorhanden: Automatisches Scrollen beim Ziehen an den Rand, Touch-Bedienung (nicht getestet).
 
 COLUMN_FILTERS (17 Eintraege, Reihenfolge = <th>; wenn die Spaltenzahl im HTML waechst, muss das Array mitwachsen):
    1 Name            text
@@ -452,7 +536,8 @@ COLUMN_FILTERS (17 Eintraege, Reihenfolge = <th>; wenn die Spaltenzahl im HTML w
    5 Google Profil   none
    6 ICP-Score       numMin
    7 Tier            select A/B/C
-   8 System          select (alle Systeme aus Abschnitt 3 + "ohne"; get: competitor_system || "ohne")
+   8 System          select (alle Systeme aus Abschnitt 3 + "ohne"; get: competitor_system || "ohne";
+                     eigene match-Funktion: "enthaelt", weil die Spalte mehrere Systeme enthalten kann)
    9 # Reviews       numMin
   10 Offen           select ja/nein
   11 Eroeffnung      select Bald eroeffnend/Neu eroeffnet/Etabliert (get: opening_status || "Etabliert")
@@ -479,11 +564,19 @@ Von oben nach unten:
   Aktivitaets-Log: <details class="log-box"> mit #logCount, #logLatest (eigene Zeile unter der Ueberschrift), #logBody
   Suche: #region, #radiusSelect (0 / 5 / 15 / 50 / custom), #radiusCustom, #category (+ <datalist id="categoryList">
          aus categories), #count (1 bis 60), #searchBtn, #syncBtn, #statusMsg
-  Aufraeumen: <details>, #hideBeforeDate, #hideBeforeBtn
-  NEU:        <details open>, #neuCount, #neuSearch, #neuTable, #neuBody
-  ALT:        <details open>, #leadCount, #sortSelect, #sortDirBtn, #exportCsv, #exportXlsx, #exportHubspot,
-              #altSearch, #altTable, #leadsBody, eingeklappte Info-Box (Erklaerung Score/Tier/Eroeffnung)
+  Aufraeumen: <details>, #hideBeforeDate, #hideBeforeBtn, #recheckBtn ("Erkennung fuer alle Leads neu pruefen")
+  NEU:        <details open>, #neuCount, Leiste (siehe unten), #neuSearch, #neuTable, #neuBody
+  ALT:        <details open>, #leadCount, Leiste (siehe unten), #altSearch, #altTable, #leadsBody
+  Leiste:     Jinja-Makro table_toolbar(p) mit p = "neu" oder "alt", identisch in beiden Tabellen. IDs: {p}SortSelect,
+              {p}SortDirBtn, {p}ResetColumnsBtn, {p}ExportCsv, {p}ExportXlsx, {p}ExportHubspot (also z. B. neuSortSelect,
+              altExportCsv). Sortieren-Optionen: ICP-Score, Bewertungsanzahl, Name, Zuerst gefunden. "Spalten
+              zuruecksetzen" wirkt in beiden auf alle drei Tabellen (gemeinsame Reihenfolge). Exportiert hat keine Leiste.
   EXPORTIERT: <details>, #exportedCount, #exportedSearch, #exportedTable, #exportedBody
+
+Erklaer-Box: Ein Jinja-Makro info_box() am Anfang der index.html erzeugt eine eingeklappte <details class="info-box">
+mit vier Karten (ICP-Score, Farbe/Tier, Spalte Eroeffnung, Weitere Spalten). Das Makro wird in allen drei Tabellen
+aufgerufen ({{ info_box() }}, jeweils ueber dem Suchfeld bzw. der Toolbar), damit der Text nur an einer Stelle
+gepflegt wird. CSS: .info-grid (Raster, auto-fit ab 260 px), .info-card, .info-legend, .info-note.
 
 Alle drei Tabellen haben dieselben 17 <th>: Name, Adresse, Telefon, Website, Google Profil, ICP-Score (%), Tier,
 System, # Reviews, Offen, Eroeffnung, Kette?, Pain-Points, Status, Notiz, In DB seit, HubSpot.
@@ -501,7 +594,9 @@ Farben: --heiss #c9ecc9 (Tier A, gruen), --mittel #ffe0a3 (Tier B, gelb), --nied
 Marker ausgeblendet). Log: .log-box, .log-latest, .log-list, .log-entry, .log-time, .log-desc, .log-undo-btn.
 Filter: tr.filter-row th (sticky, top: 29px), .col-filter-input, .col-filter-num. Suche: .table-search.
 Toast: .toast (fixed, oben mittig, z-index 1000). Hilfsklasse .hidden { display: none }.
-Buttons: button, button.secondary, .hide-btn. Kopfzeilen th: position sticky, top 0. Zellen nowrap; nur Adresse und
+Buttons: button, button.secondary, .hide-btn. Spaltenverschieben: th.col-draggable (Greif-Cursor), .col-drag-ghost (Schild am Mauszeiger),
+body.col-dragging, .col-drag-active (blaue Hervorhebung der gezogenen Spalte). Layout: .field.medium (Umkreis), .info-grid
+mit align-items: start, .col-filter-input mit min-width 56 px. Kopfzeilen th: position sticky, top 0. Zellen nowrap; nur Adresse und
 Pain-Points (td.wrap) umbrechen, max-width 240 px. Inline-Inputs: .inline-select, .inline-input (140 px).
 
 
@@ -555,9 +650,16 @@ Spaltenfilter und Suchtexte je Tabelle bleiben beim Verschieben erhalten und geh
   Tippen in Spaltenfilter    text/numMin: Event input, sofort neu rendern
   Auswahl in Spaltenfilter   select: Event change, sofort neu rendern
   Tippen in Suchfeld         Event input, sofort neu rendern
-  sortSelect / sortDirBtn    neu rendern (nur Alt betroffen)
+  {p}SortSelect / {p}SortDirBtn  Sortierung NUR dieser Tabelle aendern (sortState[p]), neu rendern; Knopf zeigt
+                             "⬇ absteigend" / "⬆ aufsteigend"
   Klick "Bis Datum ausblenden"  leeres Datum: Statusmeldung; sonst confirm()-Dialog, dann POST
-  Klick Export               Datei-Download, nach 1,5 s Neuladen
+  Klick {p}ExportCsv/Xlsx/Hubspot  exportiert die in dieser Tabelle sichtbaren Leads (siehe exportTable), Download,
+                             nach 1,5 s Neuladen
+  Ziehen einer Ueberschrift    pointerdown auf <th> der ersten Kopfzeile, Bewegung ueber 5 px startet das Verschieben,
+                             Spalten wandern live in allen drei Tabellen, Loslassen speichert die Reihenfolge
+  Klick "Spalten zuruecksetzen"  Standardreihenfolge in allen drei Tabellen, Toast
+  Klick "Erkennung neu pruefen"  confirm(), Button gesperrt, POST /api/recheck, Toast "N von M Leads aktualisiert
+                             (K Websites nicht lesbar).", Neuladen von Leads und Log
   Klick "Rückgängig"         POST Undo, Toast "Rückgängig gemacht (N betroffen)", Neuladen
   Toast                      3 Sekunden; ein neuer Toast ersetzt den alten sofort
 Es gibt KEINEN Enter-Handler: Enter im Region-/Kategorie-Feld startet keine Suche. Gesperrt werden nur searchBtn
@@ -619,11 +721,23 @@ Geoapify, Yelp Fusion, Scraping-Dienste (SerpApi, Outscraper, Apify; Nutzungsbed
 16. BEKANNTE GRENZEN, FEHLER UND RISIKEN
 ======================================================================
 
+ERKENNUNGSLUECKEN (mit echten Daten gemessen, 193 Leads):
+  - Vor dem Fix standen 88 Leads auf Tier A. Nach "Erkennung neu pruefen" auf einer Kopie: Leads mit erkanntem
+    System 40 -> 95, Tier A 88 -> 39. Ursachen: geratene Shore-Muster, Anbieterliste ohne Zahnarzt-Systeme, defekte
+    Zertifikate wurden stillschweigend als "nichts gefunden" gewertet.
+  - Weiterhin NICHT erkannt: in die Website eingebaute eigene Buchung (Beispiel Dental21, mehrstufiger Ablauf ohne
+    externe Domain). Solche Leads bleiben gruen, obwohl sie buchbar sind. Ein Textmuster fuer "Online-Buchung
+    erkennbar" hat in einer Stichprobe von 12 Faellen 10 echte Treffer und 2 Fehlalarme geliefert (kleine Stichprobe).
+  - "Nichts gefunden" wird wie "sicher keins vorhanden" gewertet (+25 Punkte). Fehlgeschlagene Abrufe und Leads ohne
+    Website bekommen dieselben Punkte. Vorschlag: Buchungs-Status mit mehreren Stufen, nur "kein Hinweis gefunden bei
+    gelesener Seite" darf Tier A werden, Shore-Kunden Score 0.
+  - Ein Jameda-Link allein muss keine Buchung sein (Bewertungsportal), wird aber als System eingetragen.
+
 FEHLER IM CODE (geprueft, im Neubau direkt richtig bauen):
-  1. Export ignoriert UI-Filter. exportAs schickt keine Filter. Wer in Alt nach "Treatwell" filtert und Export
-     klickt, exportiert und blendet ALLE nicht ausgeblendeten Leads aus. Undo macht es rueckgaengig.
-  2. Namens-Sortierung ist verkehrt herum: bei "absteigend" sortiert Name A bis Z (die Zahlen und die Zeit
-     sortieren korrekt absteigend). Ursache: dir * a.localeCompare(b) bei dir = 1.
+  1. BEHOBEN (Export ignorierte UI-Filter und exportierte alle nicht ausgeblendeten Leads): Jede Tabelle exportiert
+     jetzt genau ihre sichtbaren Leads per POST (siehe /api/export).
+  2. BEHOBEN (Namens-Sortierung war verkehrt herum, "absteigend" ergab A bis Z): sortRows nutzt jetzt
+     b.localeCompare(a).
   3. Netzwerkfehler nicht abgefangen: geocode_region, search_places und get_reviews fangen requests-Fehler
      (Timeout, Verbindungsabbruch) nicht ab, app.py faengt nur RuntimeError. Ein Timeout fuehrt zu HTTP 500 fuer die
      GANZE Suche statt zu einem gesammelten Teilfehler; das Frontend zeigt "Netzwerkfehler: ...".
@@ -638,10 +752,13 @@ Bewertungen (z. B. Treatwell-Zahl im Panel) sind nicht per API erhaeltlich.
 ERKENNUNG: Ein Buchungssystem wird nur erkannt, wenn die Domain im HTML der Startseite oder in den abrufbaren
 Reviews steht. Unterseiten (z. B. /buchen) werden nicht geladen. "Neu eröffnet" ist eine Schaetzung.
 
-DESIGN: Bestehende Leads werden nie neu bewertet. Undo eines aelteren Eintrags ueberschreibt spaetere Aenderungen
+DESIGN: Die Spaltenreihenfolge liegt nur im localStorage des jeweiligen Browsers (pro Rechner/Browser, nicht in der
+Datenbank, eine Reihenfolge fuer alle drei Tabellen). Bestehende Leads werden nur ueber "Erkennung neu pruefen" neu bewertet. Undo eines aelteren Eintrags ueberschreibt spaetere Aenderungen
 am selben Lead. newOnlyIds lebt nur im Browser. Test-Suchen fuellen die Produktiv-DB (fuer Tests eigene DB-Datei).
 
-FALLSTRICKE: Templates werden ohne Debug gecacht (Server neu starten). Neue Spalten in beiden Tabellen migrieren.
+FALLSTRICKE: Oberflaechen-Funktionen mit ECHTEN Mausereignissen testen, nicht nur mit dispatchEvent-Simulation (Chrome laesst sich
+per DevTools-Protokoll, Input.dispatchMouseEvent, fernsteuern; Rechner ohne Node/Browser-Test: Chrome-Headless reicht).
+Simulierte Tests, die "die Maus bewegen, bis etwas passiert", verdecken zu grosse Schwellwerte. Templates werden ohne Debug gecacht (Server neu starten). Neue Spalten in beiden Tabellen migrieren.
 Zeiten immer mit Uhrzeit und in Python erzeugen. leads.db und API-Keys nie committen (Repo kann oeffentlich sein).
 
 

@@ -11,6 +11,7 @@ Siehe README.md fuer die einmalige Google-API-Key-Einrichtung.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, render_template, request, send_file
 import io
@@ -25,6 +26,17 @@ db.init_db()
 
 def get_api_key():
     return request.headers.get("X-Api-Key") or os.environ.get("GOOGLE_MAPS_API_KEY")
+
+
+def annotate_chains(rows):
+    """Ergaenzt chain_count (Anzahl bekannter Standorte der Marke) und setzt chain_flag daraus. Gezaehlt wird
+    ueber die ganze Datenbank inklusive ausgeblendeter Leads, daher immer aktuell."""
+    sizes = lead_logic.chain_sizes(db.get_all_leads(include_hidden=True))
+    for row in rows:
+        count = sizes.get(row["place_id"], 1)
+        row["chain_count"] = count
+        row["chain_flag"] = int(count >= 2)
+    return rows
 
 
 @app.route("/")
@@ -64,7 +76,7 @@ def api_search():
             query = f"{category} in {region}"
             places = lead_logic.search_places(api_key, query, count, location_bias=location_bias)
             enriched = [lead_logic.enrich_place(api_key, p, region, category) for p in places]
-            lead_logic.finalize_leads(enriched)
+            lead_logic.finalize_leads(enriched, known=db.get_all_leads(include_hidden=True))
 
             total_found += len(places)
             new_place_ids.extend(db.upsert_leads(enriched))
@@ -114,7 +126,7 @@ def api_sync():
             query = f"{w['category']} in {w['region']}"
             places = lead_logic.search_places(api_key, query, w["count"], location_bias=location_bias)
             enriched = [lead_logic.enrich_place(api_key, p, w["region"], w["category"]) for p in places]
-            lead_logic.finalize_leads(enriched)
+            lead_logic.finalize_leads(enriched, known=db.get_all_leads(include_hidden=True))
             new_place_ids.extend(db.upsert_leads(enriched))
         except RuntimeError as e:
             errors.append(f"{w['category']} in {w['region']}: {e}")
@@ -137,9 +149,9 @@ def api_leads():
     tier = request.args.get("tier") or None
     status = request.args.get("status") or None
     opening_status = request.args.get("opening_status") or None
-    return jsonify(db.get_all_leads(hot_only=hot_only, region=region, category=category,
-                                     tier=tier, status=status, opening_status=opening_status,
-                                     include_hidden=True))
+    return jsonify(annotate_chains(db.get_all_leads(hot_only=hot_only, region=region, category=category,
+                                                     tier=tier, status=status, opening_status=opening_status,
+                                                     include_hidden=True)))
 
 
 @app.route("/api/leads/<place_id>", methods=["PATCH"])
@@ -182,6 +194,44 @@ def api_hide_before():
     return jsonify({"hidden": len(previous), "log_id": log_id})
 
 
+@app.route("/api/recheck", methods=["POST"])
+def api_recheck():
+    """Liest die Website aller Leads erneut (ohne Google-Aufrufe), ergaenzt erkannte Systeme in der Spalte
+    'System', bestimmt die Ketten neu und berechnet den Score neu. Bereits erkannte Systeme bleiben erhalten,
+    Status/Notizen/Ausgeblendet bleiben unberuehrt. Undo-faehig."""
+    all_leads = db.get_all_leads(include_hidden=True)
+    with_site = [l for l in all_leads if l.get("website")]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        html_by_id = dict(pool.map(lambda l: (l["place_id"], lead_logic.fetch_website_html(l["website"])), with_site))
+
+    chain_counts = lead_logic.chain_sizes(all_leads)
+    updates, previous = [], []
+    for lead in all_leads:
+        html = html_by_id.get(lead["place_id"], "")
+        old_systems = lead.get("competitor_system") or ""
+        systems = (lead_logic.merge_systems(old_systems, lead_logic.detect_competitor(lead["website"], html, []))
+                   if html else old_systems)
+        chain = int(chain_counts.get(lead["place_id"], 1) >= 2)
+        if systems == old_systems and chain == int(bool(lead.get("chain_flag"))):
+            continue
+        pain_points = [p for p in (lead.get("pain_points") or "").split(", ") if p]
+        icp_score, icp_tier = lead_logic.compute_icp_score(
+            category=lead["category_query"], rating_count=lead.get("rating_count") or 0, competitor=systems,
+            chain_flag=bool(chain), pain_points=pain_points, opening_status=lead.get("opening_status") or "Etabliert")
+        fields = {"competitor_system": systems, "chain_flag": chain, "icp_score": icp_score, "icp_tier": icp_tier,
+                  "score": lead_logic.compute_score(systems, bool(lead.get("likely_new")))}
+        previous.append({"place_id": lead["place_id"], "previous": {k: lead.get(k) for k in fields}})
+        updates.append((lead["place_id"], fields))
+
+    db.set_lead_fields(updates)
+    unreadable = sum(1 for l in with_site if not html_by_id.get(l["place_id"]))
+    if updates:
+        db.log_action("recheck", f"Erkennung neu geprueft: {len(updates)} von {len(all_leads)} Leads aktualisiert",
+                       payload=previous, undoable=True)
+    return jsonify({"checked": len(all_leads), "changed": len(updates), "unreadable": unreadable})
+
+
 @app.route("/api/logs")
 def api_logs():
     limit = int(request.args.get("limit", 50))
@@ -199,11 +249,17 @@ def api_undo_log(log_id):
     return jsonify({"ok": True, "count": result["count"]})
 
 
-@app.route("/api/export")
+@app.route("/api/export", methods=["POST"])
 def api_export():
-    fmt = request.args.get("format", "csv")
-    hot_only = request.args.get("hot_only") == "1"
-    rows = db.get_all_leads(hot_only=hot_only)
+    """Exportiert genau die uebergebenen Leads (Formularfelder: format = csv|xlsx|hubspot, ids = place_ids,
+    kommagetrennt, in der Reihenfolge der Anzeige). Bereits ausgeblendete Leads werden ignoriert. Die
+    exportierten Leads werden danach ausgeblendet und als undoable Log-Eintrag gespeichert."""
+    fmt = request.form.get("format", "csv")
+    ids = [i for i in (request.form.get("ids") or "").split(",") if i]
+    not_hidden = {r["place_id"]: r for r in annotate_chains(db.get_all_leads())}
+    rows = [not_hidden[i] for i in ids if i in not_hidden]
+    if not rows:
+        return jsonify({"error": "Keine exportierbaren Leads uebergeben."}), 400
 
     previous = db.hide_leads([r["place_id"] for r in rows])
     if previous:

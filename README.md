@@ -22,9 +22,9 @@ Zu jedem Betrieb prüft das Tool die Startseite und die verfügbaren Bewertungen
 
 | Signal | Bedeutung |
 |---|---|
-| **Genutztes Buchungssystem** | Erkennt 15 Anbieter, u. a. Treatwell, Fresha, Planity, Booksy, Timify, Phorest, Shortcuts, Salonkee, Terminland. Kein System erkannt = interessanter Lead. |
+| **Genutztes Buchungssystem** | Erkennt 23 Anbieter, u. a. Treatwell, Fresha, Planity, Booksy, Timify, Phorest sowie Doctolib, Dr. Flex und Jameda für Praxen. Mehrere Systeme pro Betrieb werden alle angezeigt. Kein System erkannt = interessanter Lead. |
 | **Eröffnungsstatus** | *Bald eröffnend* (von Google als künftige Eröffnung geführt), *Neu eröffnet* (aktiv, aber unter 5 Bewertungen, eine Schätzung), *Etabliert* |
-| **Filialkette** | 3 bis 9 namensgleiche Standorte in einem Suchlauf: mehr Umsatzpotenzial pro Abschluss |
+| **Kette** | Mindestens 2 bekannte Standorte derselben Marke, erkannt an gleichem Markennamen oder gleicher Website. Die Spalte zeigt z. B. **Ja (5)**. Mehr Umsatzpotenzial pro Abschluss |
 | **Pain-Points** | Kunden schreiben in Bewertungen "schwer erreichbar", "Termin kompliziert", "keine Rückmeldung": ein konkreter Gesprächseinstieg |
 
 ### Bewerten: der ICP-Score
@@ -35,7 +35,7 @@ Jeder Betrieb bekommt einen Wert von **0 bis 100 %**. Höher ist immer besser, 1
 | Branchen-Fit (konfigurierbar) | bis 30 |
 | **Kein** Buchungssystem erkannt | 25 |
 | Bewertungsvolumen als Kundenvolumen-Indikator | 10 bis 20 |
-| Filialkette | 15 |
+| Kette (ab 2 Standorten) | 15 |
 | Pain-Point in Bewertungen | 10 |
 | Bald eröffnend / Neu eröffnet | 20 / 15 |
 
@@ -55,13 +55,14 @@ EXPORTIERT   Alles, was du schon in HubSpot hast oder exportiert hast
 
 - Jede Tabelle ist **auf- und zuklappbar**.
 - **Spaltenfilter** unter jeder Kopfzeile (Text, Auswahl, Mindestwert) und eine **Volltextsuche** über Name, Adresse, Telefon, Notiz und mehr, in jeder Tabelle einzeln.
-- **Sortieren** nach Score, Bewertungen, Name oder Fund-Zeitpunkt.
+- **Sortieren** nach Score, Bewertungen, Name oder Fund-Zeitpunkt, für "Neu" und "Alt" getrennt. Beide Tabellen haben dieselbe Leiste mit Sortierung, "Spalten zurücksetzen" und Export.
+- **Spalten per Maus verschieben**: Überschrift anklicken, halten und ziehen, die Spalten rutschen live mit. Die Reihenfolge gilt für alle drei Tabellen und bleibt im Browser gespeichert. "Spalten zurücksetzen" stellt die Standardreihenfolge wieder her.
 - Pro Betrieb: **Status** (Neu, Kontaktiert, Termin gebucht, Nicht interessant, Kein Fit) und **Notiz**, sofort gespeichert.
 - Ein Klick auf **"In HubSpot"** verschiebt einen Betrieb nach *Exportiert*, "Einblenden" holt ihn zurück.
 - **Aufräumen**: Alles bis zu einem Datum auf einmal nach *Exportiert* schieben, praktisch für den einmaligen Abgleich mit dem CRM.
 
 ### Exportieren
-**CSV**, **Excel** (mit Farbmarkierung) und **HubSpot-Importliste**. Exportierte Betriebe wandern automatisch nach *Exportiert*, du exportierst nie zweimal dasselbe.
+**CSV**, **Excel** (mit Farbmarkierung) und **HubSpot-Importliste**. Jede Tabelle exportiert genau die Leads, die in ihr gerade sichtbar sind (mit Suche, Filtern und Sortierung). Exportierte Betriebe wandern automatisch nach *Exportiert*, du exportierst nie zweimal dasselbe.
 
 ### Rückgängig machen
 Das **Aktivitäts-Log** (oben, aufklappbar) protokolliert jede Änderung mit Uhrzeit (CET). Jede Änderung hat einen **"Rückgängig"-Button**, auch ein Massen-Export mit 50 Betrieben lässt sich mit einem Klick zurücknehmen. Auch das Zurücknehmen lässt sich zurücknehmen.
@@ -101,7 +102,7 @@ Den Key kannst du alternativ oben im Browser eintragen (gilt nur für die laufen
 - **Maximal 50 km Umkreis**, das ist ein hartes Limit der Google-API.
 - **Die Branchen-Gewichte im Score sind eine Annahme**, keine gemessenen Abschlusszahlen. Sie liegen in einer Konstante und sollten mit echten Deals abgeglichen werden.
 - **Jeder Google-Aufruf kostet etwas.** Bei sehr großen Suchen oder häufigem Sync das Budget beobachten. Ein Sync mit 7 gespeicherten Suchen dauerte ca. 1 Minute.
-- **Bekannte Kanten**: Der Export berücksichtigt aktive Filter nicht und exportiert alle nicht ausgeblendeten Betriebe. Die Excel-Tier-Farben sind gegenüber der Oberfläche vertauscht. Die vollständige Liste steht in `BUILD_GUIDE.txt`, Abschnitt 16.
+- **Bekannte Kanten**: Die Excel-Tier-Farben sind gegenüber der Oberfläche vertauscht. Eine in die Website eingebaute eigene Buchung (ohne Anbieter-Link) wird nicht erkannt. Die vollständige Liste steht in `BUILD_GUIDE.txt`, Abschnitt 16.
 
 ---
 

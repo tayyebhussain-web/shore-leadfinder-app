@@ -18,7 +18,7 @@ DISPLAY_COLUMNS = [
     ("open_now", "Geoeffnet"),
     ("opening_status", "Eroeffnungsstatus"),
     ("opening_date", "Geplantes Eroeffnungsdatum"),
-    ("chain_flag", "Filialkette (3-9)"),
+    ("chain_display", "Kette (Standorte)"),
     ("pain_points", "Review Pain-Points"),
     ("status", "Status"),
     ("notes", "Notiz"),
@@ -48,7 +48,9 @@ def format_first_seen(raw: str) -> str:
 
 def _with_computed_fields(rows: list) -> list:
     return [{**r, "google_search_url": google_search_url(r.get("name"), r.get("address")),
-              "first_seen_display": format_first_seen(r.get("first_seen"))} for r in rows]
+              "first_seen_display": format_first_seen(r.get("first_seen")),
+              "chain_display": f"Ja ({r['chain_count']})" if r.get("chain_flag") and r.get("chain_count") else ""}
+            for r in rows]
 
 
 def rows_to_csv_bytes(rows: list) -> bytes:
@@ -112,7 +114,7 @@ def rows_to_hubspot_csv_bytes(rows: list) -> bytes:
             date_part = f" ({r['opening_date']})" if r.get("opening_date") else ""
             note_parts.append(f"{r['opening_status']}{date_part}")
         if r.get("chain_flag"):
-            note_parts.append("Teil einer Filialkette (3-9 Standorte)")
+            note_parts.append(f"Teil einer Kette ({r.get('chain_count', 2)} Standorte)")
         if r.get("pain_points"):
             note_parts.append(f"Review Pain-Points: {r['pain_points']}")
         if r.get("notes"):

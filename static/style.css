@@ -40,6 +40,7 @@ h1 { margin: 0; }
 
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field.small { width: 90px; }
+.field.medium { width: 170px; }
 .field input, .field select { padding: 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; }
 label { font-size: 13px; font-weight: 600; color: #444; }
 
@@ -71,8 +72,28 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .info-box summary::-webkit-details-marker { display: none; }
 .info-box summary::before { content: "▶ "; font-size: 11px; }
 .info-box[open] summary::before { content: "▼ "; }
-.info-box-content { padding: 8px 4px 2px 16px; color: #555; }
-.info-box-content p { margin: 6px 0; }
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+    margin: 10px 0 4px;
+    align-items: start;
+}
+.info-card {
+    background: #f8f9fb;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    color: #444;
+    line-height: 1.45;
+}
+.info-card h4 { margin: 0 0 6px; font-size: 13px; color: #1a1a2e; }
+.info-card p { margin: 4px 0; }
+.info-card ul { margin: 4px 0; padding-left: 18px; }
+.info-card li { margin: 4px 0; }
+.info-card ul.info-legend { list-style: none; padding-left: 0; }
+.info-card ul.info-legend .legend-swatch { margin-right: 6px; }
+.info-note { color: #777; font-size: 12px; }
 
 #apiKeyInput { width: 320px; }
 
@@ -168,6 +189,7 @@ tr.filter-row th { background: #f0f1f4; padding: 4px 6px; position: sticky; top:
 .col-filter-input {
     width: 100%;
     box-sizing: border-box;
+    min-width: 56px;
     padding: 3px 5px;
     border: 1px solid var(--border);
     border-radius: 3px;
@@ -176,3 +198,21 @@ tr.filter-row th { background: #f0f1f4; padding: 4px 6px; position: sticky; top:
     background: white;
 }
 .col-filter-num { width: 60px; }
+
+/* Spalten per Maus verschieben */
+th.col-draggable { cursor: grab; user-select: none; -webkit-user-select: none; }
+th.col-draggable:hover { background: #eef0f8; }
+body.col-dragging, body.col-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+.col-drag-active { box-shadow: inset 0 0 0 9999px rgba(52, 84, 209, 0.14); }
+.col-drag-ghost {
+    position: fixed;
+    z-index: 2000;
+    pointer-events: none;
+    background: #1a1a2e;
+    color: #fff;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}

@@ -27,8 +27,14 @@ function showToast(msg) {
 
 const STATUS_OPTIONS = ["Neu", "Kontaktiert", "Termin gebucht", "Nicht interessant", "Kein Fit"];
 
-// true = absteigend (bestes/größtes zuerst), false = aufsteigend
-let sortDescending = true;
+// Sortierung je Tabelle (Neu und Alt haben je eine eigene Leiste). desc = absteigend (bestes/größtes zuerst).
+const sortState = {
+    neu: { key: "icp_score", desc: true },
+    alt: { key: "icp_score", desc: true },
+};
+// place_ids der zuletzt angezeigten (gefilterten und sortierten) Zeilen je Tabelle: genau diese werden exportiert
+const visibleIds = { neu: [], alt: [] };
+const TOOLBAR_TABLES = ["neu", "alt"];
 
 function escapeHtml(s) {
     const div = document.createElement("div");
@@ -59,8 +65,14 @@ const COLUMN_FILTERS = [
         type: "select",
         options: ["Fresha", "Treatwell", "Planity", "SumUp", "Calendly", "Booksy", "Salonized",
             "Beautinda", "Shortcuts", "Timify", "Phorest", "Terminland", "Salonkee", "Timely", "Vagaro",
+            "Studiobookr", "Doctolib", "Jameda", "Dr. Flex", "Samedi", "Clickdoc", "Doctena", "Dentolo",
             "Shore (bereits Kunde)", "ohne"],
         get: l => l.competitor_system || "ohne",
+        showCounts: true, // hinter jedem Namen steht, wie viele Leads dieser Tabelle ihn haben: "Doctolib (12)"
+        // Die Spalte kann mehrere Systeme enthalten ("Doctolib, Jameda"): "enthält" statt "genau gleich"
+        match: (l, val) => val === "ohne"
+            ? !l.competitor_system
+            : (l.competitor_system || "").split(", ").includes(val),
     },
     { type: "numMin", get: l => l.rating_count || 0 },
     { type: "select", options: ["ja", "nein"], get: l => l.open_now ? "ja" : "nein" },
@@ -74,10 +86,151 @@ const COLUMN_FILTERS = [
 ];
 
 const filterState = {
-    neu: { search: "", cols: {} },
-    alt: { search: "", cols: {} },
-    exported: { search: "", cols: {} },
+    neu: { search: "", cols: {}, selects: {} },
+    alt: { search: "", cols: {}, selects: {} },
+    exported: { search: "", cols: {}, selects: {} },
 };
+
+// --- Spaltenreihenfolge (per Maus verschiebbar, gilt fuer alle drei Tabellen) ---
+// Jede Zelle traegt data-col mit der Spalten-ID. Die Zellen werden immer in Standardreihenfolge erzeugt und
+// danach nach columnOrder sortiert. Filter und Eingabefelder bleiben dabei erhalten, es werden nur Knoten verschoben.
+const COLUMN_IDS = ["name", "address", "phone", "website", "google", "score", "tier", "system", "reviews", "open",
+    "opening", "chain", "pain", "status", "notes", "since", "hubspot"];
+const COLUMN_ORDER_KEY = "leadfinder.columnOrder";
+const TABLE_IDS = ["neuTable", "altTable", "exportedTable"];
+
+function sanitizeColumnOrder(saved) {
+    const valid = Array.isArray(saved) && saved.length === COLUMN_IDS.length
+        && new Set(saved).size === COLUMN_IDS.length && COLUMN_IDS.every(id => saved.includes(id));
+    return valid ? saved.slice() : COLUMN_IDS.slice();
+}
+
+function loadColumnOrder() {
+    try {
+        return sanitizeColumnOrder(JSON.parse(localStorage.getItem(COLUMN_ORDER_KEY)));
+    } catch (e) {
+        return COLUMN_IDS.slice();
+    }
+}
+
+function saveColumnOrder() {
+    try {
+        localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(columnOrder));
+    } catch (e) { /* z. B. privater Modus: Reihenfolge gilt dann nur bis zum Neuladen */ }
+}
+
+let columnOrder = loadColumnOrder();
+
+// Neue Reihenfolge, wenn die gezogene Spalte (Kanten ghostLeft/ghostRight, folgt der Maus) an Nachbarn vorbeigeschoben
+// wird. Getauscht wird, sobald ihre vordere Kante die MITTE des Nachbarn erreicht. Das haengt nur von der Breite des
+// Nachbarn ab, nicht von der Breite der gezogenen Spalte (auch eine sehr breite Spalte reagiert nach kurzem Weg) und
+// verhindert Hin-und-Her-Springen. Mehrere Tausche pro Mausbewegung sind moeglich. widths: {spaltenId: Breite in px}.
+function orderAfterDrag(order, draggedId, widths, originLeft, ghostLeft, ghostRight) {
+    let next = order.slice();
+    for (let guard = 0; guard < order.length * 2; guard++) {
+        const i = next.indexOf(draggedId);
+        if (i < 0) return order;
+        const pos = {};
+        let left = originLeft;
+        next.forEach(id => { pos[id] = { left, right: left + widths[id] }; left += widths[id]; });
+        const rightId = next[i + 1];
+        const leftId = next[i - 1];
+        if (rightId !== undefined && ghostRight > (pos[rightId].left + pos[rightId].right) / 2) {
+            next.splice(i, 2, rightId, draggedId);
+        } else if (leftId !== undefined && ghostLeft < (pos[leftId].left + pos[leftId].right) / 2) {
+            next.splice(i - 1, 2, draggedId, leftId);
+        } else {
+            break;
+        }
+    }
+    return next.join() === order.join() ? order : next;
+}
+
+function applyOrderToRow(tr, order) {
+    const cells = Array.from(tr.children);
+    if (!cells.length || !cells.every(c => c.dataset && c.dataset.col)) return;
+    const byId = {};
+    cells.forEach(c => { byId[c.dataset.col] = c; });
+    const wanted = order.map(id => byId[id]).filter(Boolean);
+    if (wanted.length !== cells.length || wanted.every((c, i) => c === cells[i])) return;
+    wanted.forEach(c => tr.appendChild(c));
+}
+
+function applyColumnOrderEverywhere() {
+    for (const id of TABLE_IDS) {
+        const table = document.getElementById(id);
+        if (table) table.querySelectorAll("tr").forEach(tr => applyOrderToRow(tr, columnOrder));
+    }
+}
+
+function markDragColumn(id, on) {
+    document.querySelectorAll(`[data-col="${id}"]`).forEach(el => el.classList.toggle("col-drag-active", on));
+}
+
+function startColumnDrag(e, headerRow, id) {
+    if (e.button !== 0) return;
+    const startX = e.clientX;
+    const headers = Array.from(headerRow.children);
+    const widths = {};
+    headers.forEach(h => { widths[h.dataset.col] = h.getBoundingClientRect().width; });
+    const draggedHeader = headers.find(h => h.dataset.col === id);
+    const grabOffset = startX - draggedHeader.getBoundingClientRect().left; // wo die Spalte angefasst wurde
+    let dragging = false;
+    let ghost = null;
+    const onMove = (ev) => {
+        if (!dragging) {
+            if (Math.abs(ev.clientX - startX) < 5) return; // erst ab 5 px gilt es als Ziehen, nicht als Klick
+            dragging = true;
+            document.body.classList.add("col-dragging");
+            markDragColumn(id, true);
+            ghost = document.createElement("div");
+            ghost.className = "col-drag-ghost";
+            ghost.textContent = draggedHeader.textContent.trim();
+            document.body.appendChild(ghost);
+        }
+        ghost.style.left = (ev.clientX + 14) + "px";
+        ghost.style.top = (ev.clientY + 14) + "px";
+        const originLeft = headerRow.children[0].getBoundingClientRect().left;
+        const ghostLeft = ev.clientX - grabOffset;
+        const next = orderAfterDrag(columnOrder, id, widths, originLeft, ghostLeft, ghostLeft + widths[id]);
+        if (next !== columnOrder) {
+            columnOrder = next;
+            applyColumnOrderEverywhere();
+        }
+    };
+    const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        if (dragging) {
+            if (ghost) ghost.remove();
+            markDragColumn(id, false);
+            document.body.classList.remove("col-dragging");
+            saveColumnOrder();
+        }
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+}
+
+function initColumnDragging(table) {
+    if (!table) return;
+    const headerRow = table.querySelector("thead tr");
+    Array.from(headerRow.children).forEach((th, i) => {
+        th.dataset.col = COLUMN_IDS[i];
+        th.classList.add("col-draggable");
+        th.title = "Mit der Maus ziehen, um die Spalte zu verschieben";
+        th.addEventListener("pointerdown", (e) => startColumnDrag(e, headerRow, th.dataset.col));
+    });
+}
+
+function resetColumnOrder() {
+    columnOrder = COLUMN_IDS.slice();
+    saveColumnOrder();
+    applyColumnOrderEverywhere();
+    showToast("Spaltenreihenfolge zurückgesetzt");
+}
 
 function buildFilterRow(table, state) {
     if (!table) return;
@@ -86,6 +239,7 @@ function buildFilterRow(table, state) {
     tr.className = "filter-row";
     COLUMN_FILTERS.forEach((col, i) => {
         const th = document.createElement("th");
+        th.dataset.col = COLUMN_IDS[i];
         if (col.type === "text") {
             const input = document.createElement("input");
             input.type = "text";
@@ -114,6 +268,7 @@ function buildFilterRow(table, state) {
                 select.appendChild(o);
             }
             select.addEventListener("change", () => { state.cols[i] = select.value; renderAll(); });
+            state.selects[i] = select;
             th.appendChild(select);
         }
         tr.appendChild(th);
@@ -127,7 +282,7 @@ function searchableText(l) {
         .filter(Boolean).join(" ").toLowerCase();
 }
 
-function applyTableFilters(leads, state) {
+function applyTableFilters(leads, state, skipIndex = -1) {
     let rows = leads;
     if (state.search) {
         const q = state.search.toLowerCase();
@@ -135,17 +290,30 @@ function applyTableFilters(leads, state) {
     }
     COLUMN_FILTERS.forEach((col, i) => {
         const val = state.cols[i];
-        if (!val) return;
+        if (!val || i === skipIndex) return;
         if (col.type === "numMin") {
             const n = parseFloat(val);
             if (!isNaN(n)) rows = rows.filter(l => (col.get(l) || 0) >= n);
         } else if (col.type === "select") {
-            rows = rows.filter(l => col.get(l) === val);
+            rows = rows.filter(l => col.match ? col.match(l, val) : col.get(l) === val);
         } else if (col.type === "text") {
             rows = rows.filter(l => String(col.get(l) || "").toLowerCase().includes(val.toLowerCase()));
         }
     });
     return rows;
+}
+
+// Schreibt hinter jede Auswahl-Option die Trefferzahl, z. B. "Doctolib (0)". Gezaehlt wird in der jeweiligen
+// Tabelle unter Beruecksichtigung aller anderen aktiven Filter und der Suche (nur der eigene Filter wird ignoriert).
+function updateFilterCounts(state, leads) {
+    COLUMN_FILTERS.forEach((col, i) => {
+        const select = state.selects[i];
+        if (!col.showCounts || !select) return;
+        const rows = applyTableFilters(leads, state, i);
+        for (const option of select.options) {
+            if (option.value) option.textContent = `${option.value} (${rows.filter(l => col.match(l, option.value)).length})`;
+        }
+    });
 }
 
 function buildRow(lead) {
@@ -196,13 +364,14 @@ function buildRow(lead) {
         <td>${lead.rating_count ?? ""}</td>
         <td>${lead.open_now ? "ja" : "nein"}</td>
         <td>${escapeHtml(lead.opening_status || "Etabliert")}${lead.opening_date ? " (" + escapeHtml(lead.opening_date) + ")" : ""}</td>
-        <td>${lead.chain_flag ? "ja" : ""}</td>
+        <td>${lead.chain_count >= 2 ? "Ja (" + lead.chain_count + ")" : ""}</td>
         <td class="wrap">${escapeHtml(lead.pain_points || "")}</td>
         <td class="status-cell"></td>
         <td class="notes-cell"></td>
         <td>${escapeHtml(formatFirstSeen(lead.first_seen))}</td>
         <td class="hide-cell"></td>
     `;
+    Array.from(tr.children).forEach((td, i) => { td.dataset.col = COLUMN_IDS[i]; });
     tr.querySelector(".status-cell").appendChild(statusSelect);
     tr.querySelector(".notes-cell").appendChild(notesInput);
 
@@ -222,21 +391,23 @@ function buildRow(lead) {
     return tr;
 }
 
-function renderTable(tbodyId, countId, leads, state, useGlobalSort) {
+function sortRows(rows, cfg) {
+    const dir = cfg.desc ? 1 : -1;
+    return [...rows].sort((a, b) => {
+        if (cfg.key === "icp_score") return dir * ((b.icp_score || 0) - (a.icp_score || 0));
+        if (cfg.key === "rating_count") return dir * ((b.rating_count || 0) - (a.rating_count || 0));
+        if (cfg.key === "name") return dir * (b.name || "").localeCompare(a.name || ""); // absteigend = Z bis A
+        if (cfg.key === "first_seen") return dir * (b.first_seen || "").localeCompare(a.first_seen || "");
+        return 0;
+    });
+}
+
+// tableKey: "neu" | "alt" (haben eine Sortier-/Export-Leiste) oder null (Exportiert: fest nach Score absteigend)
+function renderTable(tbodyId, countId, leads, state, tableKey) {
+    updateFilterCounts(state, leads);
     let rows = applyTableFilters(leads, state);
-    if (useGlobalSort) {
-        const sortKey = document.getElementById("sortSelect").value;
-        const dir = sortDescending ? 1 : -1;
-        rows = [...rows].sort((a, b) => {
-            if (sortKey === "icp_score") return dir * ((b.icp_score || 0) - (a.icp_score || 0));
-            if (sortKey === "rating_count") return dir * ((b.rating_count || 0) - (a.rating_count || 0));
-            if (sortKey === "name") return dir * (a.name || "").localeCompare(b.name || "");
-            if (sortKey === "first_seen") return dir * (b.first_seen || "").localeCompare(a.first_seen || "");
-            return 0;
-        });
-    } else {
-        rows = [...rows].sort((a, b) => (b.icp_score || 0) - (a.icp_score || 0));
-    }
+    rows = sortRows(rows, tableKey ? sortState[tableKey] : { key: "icp_score", desc: true });
+    if (tableKey) visibleIds[tableKey] = rows.map(l => l.place_id);
 
     const tbody = document.getElementById(tbodyId);
     tbody.innerHTML = "";
@@ -255,9 +426,10 @@ function renderAll() {
         else if (newOnlyIds.has(lead.place_id)) neu.push(lead);
         else alt.push(lead);
     }
-    renderTable("neuBody", "neuCount", neu, filterState.neu, false);
-    renderTable("leadsBody", "leadCount", alt, filterState.alt, true);
-    renderTable("exportedBody", "exportedCount", exported, filterState.exported, false);
+    renderTable("neuBody", "neuCount", neu, filterState.neu, "neu");
+    renderTable("leadsBody", "leadCount", alt, filterState.alt, "alt");
+    renderTable("exportedBody", "exportedCount", exported, filterState.exported, null);
+    applyColumnOrderEverywhere();
 }
 
 async function updateLead(placeId, changes) {
@@ -425,8 +597,54 @@ async function doHideBefore() {
     }
 }
 
-function exportAs(format) {
-    window.location = `/api/export?format=${format}&hot_only=0`;
+async function doRecheck() {
+    if (!confirm("Website aller Leads erneut lesen und die Spalte 'System' sowie den Score aktualisieren? "
+        + "Das dauert etwa eine Minute und ist im Aktivitäts-Log rückgängig machbar.")) return;
+    const btn = document.getElementById("recheckBtn");
+    btn.disabled = true;
+    setStatus("Erkennung läuft — liest die Websites aller Leads ...");
+    try {
+        const resp = await fetch("/api/recheck", { method: "POST" });
+        const data = await resp.json();
+        if (!resp.ok) {
+            setStatus("Fehler: " + (data.error || resp.status));
+            showToast("Fehler: " + (data.error || resp.status));
+            return;
+        }
+        const msg = `${data.changed} von ${data.checked} Leads aktualisiert (${data.unreadable} Websites nicht lesbar).`;
+        setStatus(msg);
+        showToast(msg);
+        await loadLeads();
+        await loadLogs();
+    } catch (e) {
+        setStatus("Netzwerkfehler: " + e);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// Exportiert genau die Leads, die in der Tabelle gerade sichtbar sind (mit deren Suche, Filtern und Sortierung).
+// Ein unsichtbares Formular per POST loest den Download aus, ohne dass die Seite verlassen wird.
+function exportTable(tableKey, format) {
+    const ids = visibleIds[tableKey] || [];
+    if (!ids.length) {
+        showToast("Keine Leads zum Exportieren in dieser Tabelle.");
+        return;
+    }
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/export";
+    form.style.display = "none";
+    for (const [name, value] of [["format", format], ["ids", ids.join(",")]]) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
     // Export blendet die exportierten Leads serverseitig aus - nach kurzer Verzoegerung neu laden
     setTimeout(async () => {
         await loadLeads();
@@ -437,6 +655,8 @@ function exportAs(format) {
 buildFilterRow(document.getElementById("neuTable"), filterState.neu);
 buildFilterRow(document.getElementById("altTable"), filterState.alt);
 buildFilterRow(document.getElementById("exportedTable"), filterState.exported);
+TABLE_IDS.forEach(id => initColumnDragging(document.getElementById(id)));
+applyColumnOrderEverywhere();
 
 document.getElementById("neuSearch").addEventListener("input", (e) => {
     filterState.neu.search = e.target.value;
@@ -457,16 +677,25 @@ document.getElementById("radiusSelect").addEventListener("change", (e) => {
 document.getElementById("searchBtn").addEventListener("click", doSearch);
 document.getElementById("syncBtn").addEventListener("click", doSync);
 document.getElementById("hideBeforeBtn").addEventListener("click", doHideBefore);
-document.getElementById("sortSelect").addEventListener("change", () => renderAll());
-document.getElementById("sortDirBtn").addEventListener("click", () => {
-    sortDescending = !sortDescending;
-    const btn = document.getElementById("sortDirBtn");
-    btn.textContent = sortDescending ? "⬇ absteigend" : "⬆ aufsteigend";
-    renderAll();
+document.getElementById("recheckBtn").addEventListener("click", doRecheck);
+// Sortier-, Spalten- und Export-Leiste: je Tabelle dieselben Knoepfe (IDs mit Praefix neu/alt)
+TOOLBAR_TABLES.forEach(key => {
+    const select = document.getElementById(key + "SortSelect");
+    const dirBtn = document.getElementById(key + "SortDirBtn");
+    select.addEventListener("change", () => {
+        sortState[key].key = select.value;
+        renderAll();
+    });
+    dirBtn.addEventListener("click", () => {
+        sortState[key].desc = !sortState[key].desc;
+        dirBtn.textContent = sortState[key].desc ? "⬇ absteigend" : "⬆ aufsteigend";
+        renderAll();
+    });
+    document.getElementById(key + "ResetColumnsBtn").addEventListener("click", resetColumnOrder);
+    document.getElementById(key + "ExportCsv").addEventListener("click", () => exportTable(key, "csv"));
+    document.getElementById(key + "ExportXlsx").addEventListener("click", () => exportTable(key, "xlsx"));
+    document.getElementById(key + "ExportHubspot").addEventListener("click", () => exportTable(key, "hubspot"));
 });
-document.getElementById("exportCsv").addEventListener("click", () => exportAs("csv"));
-document.getElementById("exportXlsx").addEventListener("click", () => exportAs("xlsx"));
-document.getElementById("exportHubspot").addEventListener("click", () => exportAs("hubspot"));
 
 loadLeads();
 loadLogs();

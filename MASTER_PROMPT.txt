@@ -78,7 +78,7 @@ B5: EXPORTE
 B6: FRONTEND
   Baue templates/index.html, static/app.js, static/style.css exakt nach den Abschnitten 8 bis 14: drei <details>-Tabellen
   Neu / Alt / Exportiert mit den Uebergaengen aus Abschnitt 12, JS-generierte Filterzeile aus COLUMN_FILTERS,
-  Volltextsuche je Tabelle, Sortierung nur in Alt (Namens-Sortierung korrekt), Toast, Aktivitaets-Log mit Vorschau
+  Volltextsuche je Tabelle, Sortier-/Export-Leiste in Neu und Alt (eigene Sortierung je Tabelle, Namens-Sortierung korrekt), Toast, Aktivitaets-Log mit Vorschau
   und Undo-Buttons, Umkreis-Select mit Custom-Feld, Aufraeumen-Bereich, alle Ereignisse aus Abschnitt 13, alle Texte
   aus Abschnitt 14 (Google-Texte an die neue Datenquelle anpassen). Kein Framework, kein Build-Schritt.
   ABNAHME: (1) Ein Skript prueft, dass jede in app.js referenzierte Element-ID im HTML existiert. (2) Klammer-Balance
@@ -119,7 +119,7 @@ Oeffnungsstatus liefert, verhalte dich nach Abschnitt 15, Punkte 6 und 7. Sicher
 PROMPT D (OPTIONAL): BEKANNTE FEHLER IM BESTEHENDEN PROJEKT BEHEBEN
 ----------------------------------------------------------------------
 
-Lies BUILD_GUIDE.txt, Abschnitt 16. Behebe im bestehenden Projekt die Fehler 1 bis 4:
-(1) Export nur fuer die im UI sichtbaren, gefilterten Leads; (2) Namens-Sortierung "absteigend" ergibt Z bis A;
+Lies BUILD_GUIDE.txt, Abschnitt 16. Die Fehler 1 und 2 (Export ignoriert Filter, Namens-Sortierung) sind in diesem
+Projekt bereits behoben. Behebe die Fehler 3 und 4:
 (3) requests-Fehler in geocode_region, search_places und get_reviews als Teilfehler pro Region sammeln statt HTTP 500;
 (4) Excel-Farben: Tier A gruen, B gelb, C rot. Zeige jeweils den Diff und pruefe jede Aenderung mit einem echten Test.

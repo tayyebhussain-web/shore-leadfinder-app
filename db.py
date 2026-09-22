@@ -246,6 +246,21 @@ def hide_leads_before(cutoff_date: str) -> list:
     return hide_leads([r["place_id"] for r in rows])
 
 
+RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score")
+
+
+def set_lead_fields(updates: list) -> None:
+    """updates: Liste von (place_id, {feld: wert}). Schreibt nur Felder aus RECHECK_FIELDS."""
+    conn = get_conn()
+    for place_id, fields in updates:
+        cols = [c for c in fields if c in RECHECK_FIELDS]
+        if cols:
+            conn.execute(f"UPDATE leads SET {', '.join(c + ' = ?' for c in cols)} WHERE place_id = ?",
+                         [fields[c] for c in cols] + [place_id])
+    conn.commit()
+    conn.close()
+
+
 def log_action(action_type: str, description: str, payload: list = None, undoable: bool = False) -> int:
     conn = get_conn()
     cur = conn.execute("""
