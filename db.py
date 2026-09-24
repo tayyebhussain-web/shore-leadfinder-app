@@ -33,11 +33,13 @@ def init_db():
             phone TEXT,
             website TEXT,
             email TEXT DEFAULT '',
+            owner_name TEXT DEFAULT '',
             lead_source TEXT DEFAULT '',
             rating REAL,
             rating_count INTEGER,
             business_status TEXT,
             open_now INTEGER,
+            opening_hours TEXT DEFAULT '',
             category_query TEXT,
             region_query TEXT,
             likely_new INTEGER,
@@ -53,7 +55,8 @@ def init_db():
             status TEXT DEFAULT 'Neu',
             notes TEXT DEFAULT '',
             hidden INTEGER DEFAULT 0,
-            hidden_at TEXT
+            hidden_at TEXT,
+            assigned_to TEXT DEFAULT ''
         )
     """)
     conn.execute("""
@@ -96,7 +99,10 @@ def _migrate_add_columns(conn):
         "hidden": "INTEGER DEFAULT 0",
         "hidden_at": "TEXT",
         "email": "TEXT DEFAULT ''",
+        "owner_name": "TEXT DEFAULT ''",
+        "opening_hours": "TEXT DEFAULT ''",
         "lead_source": "TEXT DEFAULT ''",
+        "assigned_to": "TEXT DEFAULT ''",
     }
     for col, coltype in additions.items():
         if col not in existing:
@@ -124,12 +130,14 @@ def upsert_leads(leads: list) -> list:
         if cur.fetchone():
             continue
         cur.execute("""
-            INSERT INTO leads (place_id, name, address, phone, website, email, lead_source, rating, rating_count,
-                business_status, open_now, category_query, region_query, likely_new,
+            INSERT INTO leads (place_id, name, address, phone, website, email, owner_name, lead_source,
+                rating, rating_count,
+                business_status, open_now, opening_hours, category_query, region_query, likely_new,
                 opening_status, opening_date, competitor_system, pain_points, score, chain_flag, first_seen,
                 icp_score, icp_tier, status, notes)
-            VALUES (:place_id, :name, :address, :phone, :website, :email, :lead_source, :rating, :rating_count,
-                :business_status, :open_now, :category_query, :region_query, :likely_new,
+            VALUES (:place_id, :name, :address, :phone, :website, :email, :owner_name, :lead_source,
+                :rating, :rating_count,
+                :business_status, :open_now, :opening_hours, :category_query, :region_query, :likely_new,
                 :opening_status, :opening_date, :competitor_system, :pain_points, :score, :chain_flag, :first_seen,
                 :icp_score, :icp_tier, :status, :notes)
         """, {**lead, "open_now": int(bool(lead.get("open_now"))), "likely_new": int(bool(lead.get("likely_new"))),
@@ -199,7 +207,8 @@ def get_lead(place_id: str) -> dict:
     return dict(row) if row else None
 
 
-def update_lead(place_id: str, status: str = None, notes: str = None, hidden: bool = None) -> bool:
+def update_lead(place_id: str, status: str = None, notes: str = None, hidden: bool = None,
+                 assigned_to: str = None) -> bool:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM leads WHERE place_id = ?", (place_id,))
@@ -210,6 +219,8 @@ def update_lead(place_id: str, status: str = None, notes: str = None, hidden: bo
         cur.execute("UPDATE leads SET status = ? WHERE place_id = ?", (status, place_id))
     if notes is not None:
         cur.execute("UPDATE leads SET notes = ? WHERE place_id = ?", (notes, place_id))
+    if assigned_to is not None:
+        cur.execute("UPDATE leads SET assigned_to = ? WHERE place_id = ?", (assigned_to, place_id))
     if hidden is not None:
         if hidden:
             cur.execute("UPDATE leads SET hidden = 1, hidden_at = ? WHERE place_id = ?", (_now_cet(), place_id))
@@ -242,6 +253,26 @@ def hide_leads(place_ids: list) -> list:
     return previous
 
 
+def bulk_assign_leads(place_ids: list, assigned_to: str) -> list:
+    """Setzt assigned_to fuer die gegebenen place_ids (auch leer, zum Zuruecksetzen). Gibt fuer jeden
+    tatsaechlich geaenderten Lead den vorherigen Zustand zurueck (fuer Undo-Log)."""
+    if not place_ids:
+        return []
+    conn = get_conn()
+    placeholders = ",".join("?" * len(place_ids))
+    rows = conn.execute(f"""
+        SELECT place_id, assigned_to FROM leads
+        WHERE place_id IN ({placeholders}) AND COALESCE(assigned_to, '') != ?
+    """, [*place_ids, assigned_to]).fetchall()
+    previous = [{"place_id": r["place_id"], "previous": {"assigned_to": r["assigned_to"]}} for r in rows]
+    if previous:
+        conn.executemany("UPDATE leads SET assigned_to = ? WHERE place_id = ?",
+                          [(assigned_to, p["place_id"]) for p in previous])
+    conn.commit()
+    conn.close()
+    return previous
+
+
 def hide_leads_before(cutoff_date: str) -> list:
     """Markiert alle Leads mit first_seen <= cutoff_date als ausgeblendet (z.B. 'schon in HubSpot').
     cutoff_date im Format YYYY-MM-DD. Gibt die vorherigen Zustaende zurueck (fuer Undo-Log)."""
@@ -253,7 +284,8 @@ def hide_leads_before(cutoff_date: str) -> list:
     return hide_leads([r["place_id"] for r in rows])
 
 
-RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score", "email")
+RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score", "email", "owner_name",
+                   "opening_hours")
 
 
 def set_lead_fields(updates: list) -> None:

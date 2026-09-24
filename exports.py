@@ -9,6 +9,7 @@ DISPLAY_COLUMNS = [
     ("address", "Adresse"),
     ("phone", "Telefon"),
     ("email", "E-Mail"),
+    ("owner_name", "Inhaber"),
     ("website", "Website"),
     ("google_search_url", "Google Profil (Suche)"),
     ("icp_score", "ICP-Score"),
@@ -17,11 +18,13 @@ DISPLAY_COLUMNS = [
     ("score", "Konkurrenz-Ampel"),
     ("rating_count", "Anzahl Bewertungen"),
     ("open_now", "Geoeffnet"),
+    ("opening_hours", "Oeffnungszeiten"),
     ("opening_status", "Eroeffnungsstatus"),
     ("opening_date", "Geplantes Eroeffnungsdatum"),
     ("chain_display", "Kette (Standorte)"),
     ("pain_points", "Review Pain-Points"),
     ("status", "Status"),
+    ("assigned_to", "Zugewiesen an"),
     ("notes", "Notiz"),
     ("region_query", "Gesuchte Region"),
     ("category_query", "Gesuchte Kategorie"),
@@ -108,8 +111,9 @@ def rows_to_hubspot_csv_bytes(rows: list) -> bytes:
     rows = _with_computed_fields(rows)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Company name", "Phone Number", "Email", "Website URL", "Google Profil (Suche)",
-                      "Street Address", "ICP Score", "ICP Tier", "Erkanntes Konkurrenzsystem", "Status", "Notiz"])
+    writer.writerow(["Company name", "Contact Name", "Phone Number", "Email", "Website URL",
+                      "Google Profil (Suche)", "Street Address", "ICP Score", "ICP Tier",
+                      "Erkanntes Konkurrenzsystem", "Status", "Notiz"])
     for r in rows:
         note_parts = []
         if r.get("opening_status") and r.get("opening_status") != "Etabliert":
@@ -122,7 +126,7 @@ def rows_to_hubspot_csv_bytes(rows: list) -> bytes:
         if r.get("notes"):
             note_parts.append(r["notes"])
         writer.writerow([
-            r.get("name", ""), r.get("phone", ""), r.get("email", ""), r.get("website", ""),
+            r.get("name", ""), r.get("owner_name", ""), r.get("phone", ""), r.get("email", ""), r.get("website", ""),
             r.get("google_search_url", ""), r.get("address", ""), r.get("icp_score", ""), r.get("icp_tier", ""),
             r.get("competitor_system", ""), r.get("status", ""), " | ".join(note_parts),
         ])

@@ -133,6 +133,9 @@ a { color: #1a1a2e; }
 .hide-btn { padding: 4px 8px; font-size: 11px; }
 .hide-btn.is-hidden { background: #2e7d32; }
 
+.checkbox-cell, th:has(> input[type="checkbox"]) { text-align: center; }
+.checkbox-cell input, th input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+
 .toast {
     position: fixed;
     top: 16px;

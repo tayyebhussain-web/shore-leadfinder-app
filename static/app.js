@@ -26,6 +26,8 @@ function showToast(msg) {
 }
 
 const STATUS_OPTIONS = ["Neu", "Kontaktiert", "Termin gebucht", "Nicht interessant", "Kein Fit"];
+// Personen, denen ein Lead zugewiesen werden kann (Spalte "Zugewiesen an" ganz rechts + Bulk-Zuweisung ueber Checkboxen).
+const ASSIGNEES = ["David", "Özi", "Tayo"];
 // Woher ein Lead kam. Aktuell liefert nur Google Maps API Leads; die weiteren Werte sind fuer spaeter
 // vorgesehen (z.B. Treatwell-Verzeichnis, Northdata), damit der Filter schon bereitsteht, sobald es sie gibt.
 const LEAD_SOURCES = ["Google Maps API", "Treatwell", "Northdata"];
@@ -36,8 +38,12 @@ const sortState = {
     alt: { key: "icp_score", desc: true },
 };
 // place_ids der zuletzt angezeigten (gefilterten und sortierten) Zeilen je Tabelle: genau diese werden exportiert
-const visibleIds = { neu: [], alt: [] };
+// und sind die Grundlage fuer "alle auswaehlen" (Bulk-Zuweisung).
+const visibleIds = { neu: [], alt: [], exported: [] };
 const TOOLBAR_TABLES = ["neu", "alt"];
+// Angehakte place_ids je Tabelle (Checkbox-Spalte ganz links), fuer die Bulk-Zuweisung an eine Person.
+const selectedIds = { neu: new Set(), alt: new Set(), exported: new Set() };
+const ASSIGN_TABLES = ["neu", "alt", "exported"];
 
 function escapeHtml(s) {
     const div = document.createElement("div");
@@ -57,12 +63,15 @@ function formatFirstSeen(raw) {
 
 // Eine Spalten-Konfiguration pro sichtbarer Tabellenspalte (gleiche Reihenfolge wie <th> in den 3 Tabellen).
 const COLUMN_FILTERS = [
+    { type: "none" }, // Checkbox-Spalte (Bulk-Auswahl, kein sinnvoller Filter)
     { type: "text", get: l => l.name },
     { type: "text", get: l => l.address },
     { type: "text", get: l => l.phone },
     { type: "text", get: l => l.email },
+    { type: "text", get: l => l.owner_name },
     { type: "select", options: ["ja", "nein"], get: l => l.website ? "ja" : "nein" },
     { type: "none" }, // Google Profil (immer vorhanden, kein sinnvoller Filter)
+    { type: "text", get: l => l.opening_hours },
     { type: "numMin", get: l => l.icp_score || 0 },
     { type: "select", options: ["A", "B", "C"], get: l => l.icp_tier || "" },
     {
@@ -88,6 +97,12 @@ const COLUMN_FILTERS = [
     { type: "text", get: l => formatFirstSeen(l.first_seen) },
     { type: "select", options: LEAD_SOURCES, get: l => l.lead_source || "Google Maps API" },
     { type: "none" }, // HubSpot-Button
+    {
+        type: "select",
+        options: [...ASSIGNEES, "Nicht zugewiesen"],
+        get: l => l.assigned_to || "Nicht zugewiesen",
+        match: (l, val) => val === "Nicht zugewiesen" ? !l.assigned_to : l.assigned_to === val,
+    },
 ];
 
 const filterState = {
@@ -99,8 +114,8 @@ const filterState = {
 // --- Spaltenreihenfolge (per Maus verschiebbar, gilt fuer alle drei Tabellen) ---
 // Jede Zelle traegt data-col mit der Spalten-ID. Die Zellen werden immer in Standardreihenfolge erzeugt und
 // danach nach columnOrder sortiert. Filter und Eingabefelder bleiben dabei erhalten, es werden nur Knoten verschoben.
-const COLUMN_IDS = ["name", "address", "phone", "email", "website", "google", "score", "tier", "system", "reviews", "open",
-    "opening", "chain", "pain", "status", "notes", "since", "source", "hubspot"];
+const COLUMN_IDS = ["select", "name", "address", "phone", "email", "owner", "website", "google", "hours", "score", "tier", "system", "reviews", "open",
+    "opening", "chain", "pain", "status", "notes", "since", "source", "hubspot", "assigned"];
 const COLUMN_ORDER_KEY = "leadfinder.columnOrder";
 const TABLE_IDS = ["neuTable", "altTable", "exportedTable"];
 
@@ -283,7 +298,8 @@ function buildFilterRow(table, state) {
 
 function searchableText(l) {
     return [l.name, l.address, l.phone, l.email, l.website, l.competitor_system, l.pain_points,
-        l.notes, l.status, l.opening_status, l.icp_tier, l.region_query, l.category_query, l.lead_source]
+        l.notes, l.status, l.opening_status, l.icp_tier, l.region_query, l.category_query, l.lead_source,
+        l.owner_name, l.assigned_to]
         .filter(Boolean).join(" ").toLowerCase();
 }
 
@@ -321,12 +337,44 @@ function updateFilterCounts(state, leads) {
     });
 }
 
-function buildRow(lead) {
+function buildRow(lead, tableKey) {
     const tr = document.createElement("tr");
     tr.className = `tier-${lead.icp_tier || ""}`;
     const website = lead.website ? `<a href="${lead.website}" target="_blank">Link</a>` : "";
     const searchQuery = encodeURIComponent(`${lead.name || ""} ${lead.address || ""}`.trim());
     const mapsLink = searchQuery ? `<a href="https://www.google.com/search?q=${searchQuery}" target="_blank">Profil</a>` : "";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "row-select";
+    checkbox.checked = selectedIds[tableKey].has(lead.place_id);
+    checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selectedIds[tableKey].add(lead.place_id);
+        else selectedIds[tableKey].delete(lead.place_id);
+        updateSelectAllCheckbox(tableKey);
+        updateSelectedCount(tableKey);
+    });
+
+    const assignSelect = document.createElement("select");
+    assignSelect.className = "inline-select";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = "–";
+    assignSelect.appendChild(noneOpt);
+    for (const person of ASSIGNEES) {
+        const o = document.createElement("option");
+        o.value = person;
+        o.textContent = person;
+        if ((lead.assigned_to || "") === person) o.selected = true;
+        assignSelect.appendChild(o);
+    }
+    assignSelect.addEventListener("change", async () => {
+        const newAssigned = assignSelect.value;
+        await updateLead(lead.place_id, { assigned_to: newAssigned });
+        lead.assigned_to = newAssigned;
+        showToast(`${lead.name}: Zugewiesen an → ${newAssigned || "niemand"}`);
+        loadLogs();
+    });
 
     const statusSelect = document.createElement("select");
     statusSelect.className = "inline-select";
@@ -358,12 +406,15 @@ function buildRow(lead) {
     });
 
     tr.innerHTML = `
+        <td class="checkbox-cell"></td>
         <td>${escapeHtml(lead.name || "")}</td>
         <td class="wrap">${escapeHtml(lead.address || "")}</td>
         <td>${escapeHtml(lead.phone || "")}</td>
         <td>${lead.email ? `<a href="mailto:${escapeHtml(lead.email)}">${escapeHtml(lead.email)}</a>` : ""}</td>
+        <td>${escapeHtml(lead.owner_name || "")}</td>
         <td>${website}</td>
         <td>${mapsLink}</td>
+        <td>${escapeHtml(lead.opening_hours || "")}</td>
         <td><strong>${lead.icp_score != null ? lead.icp_score + " %" : ""}</strong></td>
         <td>${escapeHtml(lead.icp_tier || "")}</td>
         <td>${escapeHtml(lead.competitor_system || "—")}</td>
@@ -377,10 +428,13 @@ function buildRow(lead) {
         <td>${escapeHtml(formatFirstSeen(lead.first_seen))}</td>
         <td>${escapeHtml(lead.lead_source || "Google Maps API")}</td>
         <td class="hide-cell"></td>
+        <td class="assigned-cell"></td>
     `;
     Array.from(tr.children).forEach((td, i) => { td.dataset.col = COLUMN_IDS[i]; });
+    tr.querySelector(".checkbox-cell").appendChild(checkbox);
     tr.querySelector(".status-cell").appendChild(statusSelect);
     tr.querySelector(".notes-cell").appendChild(notesInput);
+    tr.querySelector(".assigned-cell").appendChild(assignSelect);
 
     const hideBtn = document.createElement("button");
     hideBtn.className = `hide-btn secondary${lead.hidden ? " is-hidden" : ""}`;
@@ -409,19 +463,46 @@ function sortRows(rows, cfg) {
     });
 }
 
-// tableKey: "neu" | "alt" (haben eine Sortier-/Export-Leiste) oder null (Exportiert: fest nach Score absteigend)
+// tableKey: "neu" | "alt" (haben eine Sortier-/Export-Leiste) | "exported" (fest nach Score absteigend)
 function renderTable(tbodyId, countId, leads, state, tableKey) {
     updateFilterCounts(state, leads);
     let rows = applyTableFilters(leads, state);
-    rows = sortRows(rows, tableKey ? sortState[tableKey] : { key: "icp_score", desc: true });
-    if (tableKey) visibleIds[tableKey] = rows.map(l => l.place_id);
+    rows = sortRows(rows, sortState[tableKey] || { key: "icp_score", desc: true });
+    visibleIds[tableKey] = rows.map(l => l.place_id);
 
     const tbody = document.getElementById(tbodyId);
     tbody.innerHTML = "";
     document.getElementById(countId).textContent = `(${rows.length} von ${leads.length})`;
     for (const lead of rows) {
-        tbody.appendChild(buildRow(lead));
+        tbody.appendChild(buildRow(lead, tableKey));
     }
+    updateSelectAllCheckbox(tableKey);
+    updateSelectedCount(tableKey);
+}
+
+// Entfernt place_ids aus der Auswahl, die nicht mehr zu dieser Tabelle gehoeren (z.B. weil der Lead
+// ausgeblendet/eingeblendet wurde und die Zeile in eine andere Tabelle gewandert ist).
+function pruneSelection(tableKey, leads) {
+    const ids = new Set(leads.map(l => l.place_id));
+    for (const id of Array.from(selectedIds[tableKey])) {
+        if (!ids.has(id)) selectedIds[tableKey].delete(id);
+    }
+}
+
+function updateSelectAllCheckbox(tableKey) {
+    const cb = document.getElementById(tableKey + "SelectAll");
+    if (!cb) return;
+    const ids = visibleIds[tableKey] || [];
+    const selected = selectedIds[tableKey];
+    cb.checked = ids.length > 0 && ids.every(id => selected.has(id));
+    cb.indeterminate = !cb.checked && ids.some(id => selected.has(id));
+}
+
+function updateSelectedCount(tableKey) {
+    const el = document.getElementById(tableKey + "SelectedCount");
+    if (!el) return;
+    const n = selectedIds[tableKey].size;
+    el.textContent = n ? `${n} ausgewählt` : "";
 }
 
 function renderAll() {
@@ -433,9 +514,12 @@ function renderAll() {
         else if (newOnlyIds.has(lead.place_id)) neu.push(lead);
         else alt.push(lead);
     }
+    pruneSelection("neu", neu);
+    pruneSelection("alt", alt);
+    pruneSelection("exported", exported);
     renderTable("neuBody", "neuCount", neu, filterState.neu, "neu");
     renderTable("leadsBody", "leadCount", alt, filterState.alt, "alt");
-    renderTable("exportedBody", "exportedCount", exported, filterState.exported, null);
+    renderTable("exportedBody", "exportedCount", exported, filterState.exported, "exported");
     applyColumnOrderEverywhere();
 }
 
@@ -630,6 +714,41 @@ async function doRecheck() {
     }
 }
 
+// Weist alle in der Tabelle angehakten Leads einer Person zu (oder hebt die Zuweisung auf, wenn "– auswählen –"
+// gewaehlt bleibt und trotzdem geklickt wird - das wird unten abgefangen). Undo-faehig ueber das Aktivitaets-Log.
+async function doBulkAssign(tableKey) {
+    const select = document.getElementById(tableKey + "AssignSelect");
+    const assignedTo = select.value;
+    const ids = Array.from(selectedIds[tableKey]);
+    if (!ids.length) {
+        showToast("Keine Leads markiert.");
+        return;
+    }
+    if (!assignedTo) {
+        showToast("Bitte eine Person auswählen.");
+        return;
+    }
+    try {
+        const resp = await fetch("/api/leads/bulk-assign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids, assigned_to: assignedTo }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            showToast("Fehler: " + data.error);
+            return;
+        }
+        showToast(`${data.changed} Leads → ${assignedTo}`);
+        selectedIds[tableKey].clear();
+        select.value = "";
+        await loadLeads();
+        await loadLogs();
+    } catch (e) {
+        showToast("Netzwerkfehler: " + e);
+    }
+}
+
 // Exportiert genau die Leads, die in der Tabelle gerade sichtbar sind (mit deren Suche, Filtern und Sortierung).
 // Ein unsichtbares Formular per POST loest den Download aus, ohne dass die Seite verlassen wird.
 function exportTable(tableKey, format) {
@@ -702,6 +821,16 @@ TOOLBAR_TABLES.forEach(key => {
     document.getElementById(key + "ExportCsv").addEventListener("click", () => exportTable(key, "csv"));
     document.getElementById(key + "ExportXlsx").addEventListener("click", () => exportTable(key, "xlsx"));
     document.getElementById(key + "ExportHubspot").addEventListener("click", () => exportTable(key, "hubspot"));
+});
+// Checkbox-Spalte + Bulk-Zuweisung: gilt fuer alle drei Tabellen (auch Exportiert, das keine Sortier-/Export-Leiste hat).
+ASSIGN_TABLES.forEach(key => {
+    document.getElementById(key + "SelectAll").addEventListener("change", (e) => {
+        const ids = visibleIds[key] || [];
+        if (e.target.checked) ids.forEach(id => selectedIds[key].add(id));
+        else ids.forEach(id => selectedIds[key].delete(id));
+        renderAll();
+    });
+    document.getElementById(key + "AssignBtn").addEventListener("click", () => doBulkAssign(key));
 });
 
 loadLeads();
