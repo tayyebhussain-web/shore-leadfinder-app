@@ -8,6 +8,7 @@ DISPLAY_COLUMNS = [
     ("name", "Name"),
     ("address", "Adresse"),
     ("phone", "Telefon"),
+    ("instagram", "Instagram"),
     ("email", "E-Mail"),
     ("owner_name", "Inhaber"),
     ("website", "Website"),

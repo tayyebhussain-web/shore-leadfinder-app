@@ -418,6 +418,27 @@ def detect_email(website: str, website_html: str) -> str:
     return picks[0] if picks else ""
 
 
+# Ausschluesse: generische Instagram-Verweise, die auf fast jeder Website vorkommen, aber kein Business-Account sind
+INSTAGRAM_JUNK_HANDLES = {"instagram", "explore", "accounts", "p", "reel", "reels", "stories", "direct",
+                          "share", "tv", "about", "legal", "developer", "help"}
+
+
+def detect_instagram(website: str, website_html: str) -> str:
+    """Instagram-Profil-URL aus dem Website-HTML: sucht Links auf instagram.com/<handle> (z.B. in Social-
+    Icons in Header/Footer). Findet nur Accounts, die der Betrieb selbst auf seiner Website verlinkt hat -
+    keine Instagram-Suche nach dem Firmennamen. Gibt "" zurueck, wenn nichts Plausibles gefunden wurde."""
+    if not website_html:
+        return ""
+    handles = re.findall(
+        r'instagram\.com/([a-zA-Z0-9_.]{1,30})/?(?:["\'\s?&<>#])',
+        website_html + " ", re.I)
+    for handle in handles:
+        low = handle.lower().rstrip(".")
+        if low and low not in INSTAGRAM_JUNK_HANDLES:
+            return f"https://www.instagram.com/{low}/"
+    return ""
+
+
 # --- Inhaber-/Ansprechpartner-Name -----------------------------------------------------------
 # Wird nicht von der Startseite gelesen, sondern vom Impressum (in Deutschland gesetzlich vorgeschrieben,
 # Angabe nach § 5 TMG), das dafuer separat verlinkt und abgerufen wird. Das ist eine Heuristik mit Regeln
@@ -647,6 +668,7 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
     competitor = detect_competitor(website, website_html, review_texts)
     pain_points = detect_pain_points(review_texts)
     email = detect_email(website, website_html)
+    instagram = detect_instagram(website, website_html)
     impressum_url = find_impressum_url(website, website_html) if website_html else ""
     impressum_html = fetch_website_html(impressum_url) if impressum_url else ""
     owner_name = detect_owner_name(name, impressum_html)
@@ -659,6 +681,7 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
         "phone": phone,
         "website": website,
         "email": email,
+        "instagram": instagram,
         "owner_name": owner_name,
         "lead_source": LEAD_SOURCE_GOOGLE,
         "rating": place.get("rating"),

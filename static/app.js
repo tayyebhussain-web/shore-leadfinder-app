@@ -67,6 +67,7 @@ const COLUMN_FILTERS = [
     { type: "text", get: l => l.name },
     { type: "text", get: l => l.address },
     { type: "text", get: l => l.phone },
+    { type: "select", options: ["ja", "nein"], get: l => l.instagram ? "ja" : "nein" },
     { type: "text", get: l => l.email },
     { type: "text", get: l => l.owner_name },
     { type: "select", options: ["ja", "nein"], get: l => l.website ? "ja" : "nein" },
@@ -114,7 +115,7 @@ const filterState = {
 // --- Spaltenreihenfolge (per Maus verschiebbar, gilt fuer alle drei Tabellen) ---
 // Jede Zelle traegt data-col mit der Spalten-ID. Die Zellen werden immer in Standardreihenfolge erzeugt und
 // danach nach columnOrder sortiert. Filter und Eingabefelder bleiben dabei erhalten, es werden nur Knoten verschoben.
-const COLUMN_IDS = ["select", "name", "address", "phone", "email", "owner", "website", "google", "hours", "score", "tier", "system", "reviews", "open",
+const COLUMN_IDS = ["select", "name", "address", "phone", "instagram", "email", "owner", "website", "google", "hours", "score", "tier", "system", "reviews", "open",
     "opening", "chain", "pain", "status", "notes", "since", "source", "hubspot", "assigned"];
 const COLUMN_ORDER_KEY = "leadfinder.columnOrder";
 const TABLE_IDS = ["neuTable", "altTable", "exportedTable"];
@@ -299,7 +300,7 @@ function buildFilterRow(table, state) {
 function searchableText(l) {
     return [l.name, l.address, l.phone, l.email, l.website, l.competitor_system, l.pain_points,
         l.notes, l.status, l.opening_status, l.icp_tier, l.region_query, l.category_query, l.lead_source,
-        l.owner_name, l.assigned_to]
+        l.owner_name, l.assigned_to, l.instagram]
         .filter(Boolean).join(" ").toLowerCase();
 }
 
@@ -410,6 +411,7 @@ function buildRow(lead, tableKey) {
         <td>${escapeHtml(lead.name || "")}</td>
         <td class="wrap">${escapeHtml(lead.address || "")}</td>
         <td>${escapeHtml(lead.phone || "")}</td>
+        <td>${lead.instagram ? `<a href="${escapeHtml(lead.instagram)}" target="_blank">Profil</a>` : ""}</td>
         <td>${lead.email ? `<a href="mailto:${escapeHtml(lead.email)}">${escapeHtml(lead.email)}</a>` : ""}</td>
         <td>${escapeHtml(lead.owner_name || "")}</td>
         <td>${website}</td>

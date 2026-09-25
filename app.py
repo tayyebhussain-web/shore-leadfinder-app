@@ -218,9 +218,10 @@ def api_hide_before():
 @app.route("/api/recheck", methods=["POST"])
 def api_recheck():
     """Liest die Website aller Leads erneut (ohne Google-Aufrufe), ergaenzt erkannte Systeme in der Spalte
-    'System', eine Kontakt-E-Mail und einen Inhaber-/Ansprechpartner-Namen (aus dem Impressum, falls noch
-    keine/keiner vorhanden), bestimmt die Ketten neu und berechnet den Score neu. Bereits erkannte
-    Systeme/E-Mails/Namen bleiben erhalten, Status/Notizen/Ausgeblendet bleiben unberuehrt. Undo-faehig."""
+    'System', eine Kontakt-E-Mail, ein verlinktes Instagram-Profil und einen Inhaber-/Ansprechpartner-Namen
+    (aus dem Impressum, falls noch keine/keiner vorhanden), bestimmt die Ketten neu und berechnet den Score
+    neu. Bereits erkannte Systeme/E-Mails/Namen bleiben erhalten, Status/Notizen/Ausgeblendet bleiben
+    unberuehrt. Undo-faehig."""
     all_leads = db.get_all_leads(include_hidden=True)
     with_site = [l for l in all_leads if l.get("website")]
 
@@ -246,10 +247,12 @@ def api_recheck():
         chain = int(chain_counts.get(lead["place_id"], 1) >= 2)
         old_email = lead.get("email") or ""
         email = old_email or (lead_logic.detect_email(lead["website"], html) if html else "")
+        old_instagram = lead.get("instagram") or ""
+        instagram = old_instagram or (lead_logic.detect_instagram(lead["website"], html) if html else "")
         old_owner = lead.get("owner_name") or ""
         owner_name = old_owner or lead_logic.detect_owner_name(lead["name"], impressum_html_by_id.get(lead["place_id"], ""))
         if (systems == old_systems and chain == int(bool(lead.get("chain_flag")))
-                and email == old_email and owner_name == old_owner):
+                and email == old_email and instagram == old_instagram and owner_name == old_owner):
             continue
         pain_points = [p for p in (lead.get("pain_points") or "").split(", ") if p]
         icp_score, icp_tier = lead_logic.compute_icp_score(
@@ -257,7 +260,7 @@ def api_recheck():
             chain_flag=bool(chain), pain_points=pain_points, opening_status=lead.get("opening_status") or "Etabliert")
         fields = {"competitor_system": systems, "chain_flag": chain, "icp_score": icp_score, "icp_tier": icp_tier,
                   "score": lead_logic.compute_score(systems, bool(lead.get("likely_new"))), "email": email,
-                  "owner_name": owner_name}
+                  "instagram": instagram, "owner_name": owner_name}
         previous.append({"place_id": lead["place_id"], "previous": {k: lead.get(k) for k in fields}})
         updates.append((lead["place_id"], fields))
 

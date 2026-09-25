@@ -33,6 +33,7 @@ def init_db():
             phone TEXT,
             website TEXT,
             email TEXT DEFAULT '',
+            instagram TEXT DEFAULT '',
             owner_name TEXT DEFAULT '',
             lead_source TEXT DEFAULT '',
             rating REAL,
@@ -103,6 +104,7 @@ def _migrate_add_columns(conn):
         "opening_hours": "TEXT DEFAULT ''",
         "lead_source": "TEXT DEFAULT ''",
         "assigned_to": "TEXT DEFAULT ''",
+        "instagram": "TEXT DEFAULT ''",
     }
     for col, coltype in additions.items():
         if col not in existing:
@@ -130,12 +132,12 @@ def upsert_leads(leads: list) -> list:
         if cur.fetchone():
             continue
         cur.execute("""
-            INSERT INTO leads (place_id, name, address, phone, website, email, owner_name, lead_source,
+            INSERT INTO leads (place_id, name, address, phone, website, email, instagram, owner_name, lead_source,
                 rating, rating_count,
                 business_status, open_now, opening_hours, category_query, region_query, likely_new,
                 opening_status, opening_date, competitor_system, pain_points, score, chain_flag, first_seen,
                 icp_score, icp_tier, status, notes)
-            VALUES (:place_id, :name, :address, :phone, :website, :email, :owner_name, :lead_source,
+            VALUES (:place_id, :name, :address, :phone, :website, :email, :instagram, :owner_name, :lead_source,
                 :rating, :rating_count,
                 :business_status, :open_now, :opening_hours, :category_query, :region_query, :likely_new,
                 :opening_status, :opening_date, :competitor_system, :pain_points, :score, :chain_flag, :first_seen,
@@ -285,7 +287,7 @@ def hide_leads_before(cutoff_date: str) -> list:
 
 
 RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score", "email", "owner_name",
-                   "opening_hours")
+                   "opening_hours", "instagram")
 
 
 def set_lead_fields(updates: list) -> None:
