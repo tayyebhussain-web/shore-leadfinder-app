@@ -6,6 +6,7 @@ from urllib.parse import quote_plus
 
 DISPLAY_COLUMNS = [
     ("name", "Name"),
+    ("booking_display", "Buchungssystem"),
     ("address", "Adresse"),
     ("phone", "Telefon"),
     ("instagram", "Instagram"),
@@ -55,7 +56,9 @@ def format_first_seen(raw: str) -> str:
 def _with_computed_fields(rows: list) -> list:
     return [{**r, "google_search_url": google_search_url(r.get("name"), r.get("address")),
               "first_seen_display": format_first_seen(r.get("first_seen")),
-              "chain_display": f"Ja ({r['chain_count']})" if r.get("chain_flag") and r.get("chain_count") else ""}
+              "chain_display": f"Ja ({r['chain_count']})" if r.get("chain_flag") and r.get("chain_count") else "",
+              "booking_display": ("N/A" if r.get("has_booking_system") is None
+                                   else ("Ja" if r.get("has_booking_system") else "Nein"))}
             for r in rows]
 
 

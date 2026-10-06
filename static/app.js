@@ -51,6 +51,14 @@ function escapeHtml(s) {
     return div.innerHTML;
 }
 
+// has_booking_system ist dreiwertig: true/false (geprueft) oder null (keine Website oder nicht lesbar - konnte
+// nicht geprueft werden). null ist in JS falsy wie false, deshalb hier explizit zuerst abfragen, damit "nicht
+// geprueft" nicht faelschlich als "nein" erscheint ("N/A" statt einer sicher wirkenden Verneinung).
+function bookingStatus(l) {
+    if (l.has_booking_system === null || l.has_booking_system === undefined) return "n/a";
+    return l.has_booking_system ? "ja" : "nein";
+}
+
 // Wandelt den intern sortierbaren Zeitstempel ("2026-09-18 18:52:00") in "18:52 - 18-09-2026" um.
 // Aeltere Eintraege ohne Uhrzeit ("2026-09-18") werden als "18-09-2026" angezeigt.
 function formatFirstSeen(raw) {
@@ -65,6 +73,13 @@ function formatFirstSeen(raw) {
 const COLUMN_FILTERS = [
     { type: "none" }, // Checkbox-Spalte (Bulk-Auswahl, kein sinnvoller Filter)
     { type: "text", get: l => l.name },
+    {
+        type: "select",
+        options: ["ja", "nein", "n/a"],
+        get: bookingStatus,
+        showCounts: true, // hinter "ja"/"nein"/"n/a" steht die Trefferzahl dieser Tabelle, z. B. "ja (42)"
+        match: (l, val) => bookingStatus(l) === val,
+    },
     { type: "text", get: l => l.address },
     { type: "text", get: l => l.phone },
     { type: "select", options: ["ja", "nein"], get: l => l.instagram ? "ja" : "nein" },
@@ -115,7 +130,7 @@ const filterState = {
 // --- Spaltenreihenfolge (per Maus verschiebbar, gilt fuer alle drei Tabellen) ---
 // Jede Zelle traegt data-col mit der Spalten-ID. Die Zellen werden immer in Standardreihenfolge erzeugt und
 // danach nach columnOrder sortiert. Filter und Eingabefelder bleiben dabei erhalten, es werden nur Knoten verschoben.
-const COLUMN_IDS = ["select", "name", "address", "phone", "instagram", "email", "owner", "website", "google", "hours", "score", "tier", "system", "reviews", "open",
+const COLUMN_IDS = ["select", "name", "booking", "address", "phone", "instagram", "email", "owner", "website", "google", "hours", "score", "tier", "system", "reviews", "open",
     "opening", "chain", "pain", "status", "notes", "since", "source", "hubspot", "assigned"];
 const COLUMN_ORDER_KEY = "leadfinder.columnOrder";
 const TABLE_IDS = ["neuTable", "altTable", "exportedTable"];
@@ -374,6 +389,7 @@ function buildRow(lead, tableKey) {
         await updateLead(lead.place_id, { assigned_to: newAssigned });
         lead.assigned_to = newAssigned;
         showToast(`${lead.name}: Zugewiesen an → ${newAssigned || "niemand"}`);
+        renderAll(); // Lead wandert in die Tabelle der Person (bzw. zurück nach "Neu"/"Alt")
         loadLogs();
     });
 
@@ -409,6 +425,7 @@ function buildRow(lead, tableKey) {
     tr.innerHTML = `
         <td class="checkbox-cell"></td>
         <td>${escapeHtml(lead.name || "")}</td>
+        <td title="${escapeHtml(lead.booking_evidence || "")}" class="booking-${bookingStatus(lead).replace("/", "")}">${{ja: "Ja", nein: "Nein", "n/a": "N/A"}[bookingStatus(lead)]}</td>
         <td class="wrap">${escapeHtml(lead.address || "")}</td>
         <td>${escapeHtml(lead.phone || "")}</td>
         <td>${lead.instagram ? `<a href="${escapeHtml(lead.instagram)}" target="_blank">Profil</a>` : ""}</td>
@@ -511,8 +528,11 @@ function renderAll() {
     const neu = [];
     const alt = [];
     const exported = [];
+    const byPerson = {};
+    PERSON_TABLES.forEach(t => { byPerson[t.person] = []; });
     for (const lead of currentLeads) {
         if (lead.hidden) exported.push(lead);
+        else if (lead.assigned_to && byPerson[lead.assigned_to]) byPerson[lead.assigned_to].push(lead);
         else if (newOnlyIds.has(lead.place_id)) neu.push(lead);
         else alt.push(lead);
     }
@@ -521,6 +541,10 @@ function renderAll() {
     pruneSelection("exported", exported);
     renderTable("neuBody", "neuCount", neu, filterState.neu, "neu");
     renderTable("leadsBody", "leadCount", alt, filterState.alt, "alt");
+    for (const { key, person } of PERSON_TABLES) {
+        pruneSelection(key, byPerson[person]);
+        renderTable(key + "Body", key + "Count", byPerson[person], filterState[key], key);
+    }
     renderTable("exportedBody", "exportedCount", exported, filterState.exported, "exported");
     applyColumnOrderEverywhere();
 }
@@ -763,7 +787,11 @@ function exportTable(tableKey, format) {
     form.method = "POST";
     form.action = "/api/export";
     form.style.display = "none";
-    for (const [name, value] of [["format", format], ["ids", ids.join(",")]]) {
+    const fields = [["format", format], ["ids", ids.join(",")]];
+    // Personen-Tabelle: Server benennt die Datei nach der Person (exportierte Leads wandern wie immer nach "Exportiert")
+    const personTable = PERSON_TABLES.find(t => t.key === tableKey);
+    if (personTable) fields.push(["person", personTable.person]);
+    for (const [name, value] of fields) {
         const input = document.createElement("input");
         input.type = "hidden";
         input.name = name;
@@ -780,9 +808,29 @@ function exportTable(tableKey, format) {
     }, 1500);
 }
 
+// Personen-Tabellen ("Nach Zuweisung"): je Person aus ASSIGNEES eine Tabelle, im Template mit data-assignee/data-key
+// angelegt. Zugewiesene, nicht ausgeblendete Leads stehen nur dort, nicht mehr in "Neu"/"Alt". Sie bekommen dieselben
+// Zustaende (Sortierung, Filter, Auswahl) wie die anderen Tabellen und dieselbe Sortier-/Export- und Zuweisungs-Leiste.
+const PERSON_TABLES = Array.from(document.querySelectorAll("[data-assignee]"))
+    .map(el => ({ key: el.dataset.key, person: el.dataset.assignee }));
+for (const { key } of PERSON_TABLES) {
+    sortState[key] = { key: "icp_score", desc: true };
+    visibleIds[key] = [];
+    selectedIds[key] = new Set();
+    filterState[key] = { search: "", cols: {}, selects: {} };
+    TOOLBAR_TABLES.push(key);
+    ASSIGN_TABLES.push(key);
+    TABLE_IDS.push(key + "Table");
+    document.getElementById(key + "Search").addEventListener("input", (e) => {
+        filterState[key].search = e.target.value;
+        renderAll();
+    });
+}
+
 buildFilterRow(document.getElementById("neuTable"), filterState.neu);
 buildFilterRow(document.getElementById("altTable"), filterState.alt);
 buildFilterRow(document.getElementById("exportedTable"), filterState.exported);
+PERSON_TABLES.forEach(({ key }) => buildFilterRow(document.getElementById(key + "Table"), filterState[key]));
 TABLE_IDS.forEach(id => initColumnDragging(document.getElementById(id)));
 applyColumnOrderEverywhere();
 

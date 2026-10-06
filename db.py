@@ -34,6 +34,8 @@ def init_db():
             website TEXT,
             email TEXT DEFAULT '',
             instagram TEXT DEFAULT '',
+            has_booking_system INTEGER DEFAULT 0,
+            booking_evidence TEXT DEFAULT '',
             owner_name TEXT DEFAULT '',
             lead_source TEXT DEFAULT '',
             rating REAL,
@@ -105,6 +107,8 @@ def _migrate_add_columns(conn):
         "lead_source": "TEXT DEFAULT ''",
         "assigned_to": "TEXT DEFAULT ''",
         "instagram": "TEXT DEFAULT ''",
+        "has_booking_system": "INTEGER DEFAULT 0",
+        "booking_evidence": "TEXT DEFAULT ''",
     }
     for col, coltype in additions.items():
         if col not in existing:
@@ -112,6 +116,13 @@ def _migrate_add_columns(conn):
     if "lead_source" not in existing:
         # Alle bisherigen Leads kamen ausnahmslos ueber Google, bevor es das Feld gab
         conn.execute("UPDATE leads SET lead_source = 'Google Maps API' WHERE lead_source IS NULL OR lead_source = ''")
+    if "has_booking_system" not in existing:
+        # Vor Einfuehrung der Spalte zeigte ein nicht-leeres competitor_system bereits ein erkanntes System an
+        conn.execute("UPDATE leads SET has_booking_system = 1 WHERE competitor_system IS NOT NULL AND competitor_system != ''")
+    # Ohne Website konnte nie geprueft werden, ob ein Buchungssystem existiert - NULL ("N/A") statt faelschlich
+    # 0 ("Nein"), sonst wirkt es beim Anrufen wie eine sichere Verneinung statt "wir wissen es schlicht nicht".
+    # Laeuft bei jedem Start erneut (idempotent), falls spaeter die Website eines Leads geloescht wird.
+    conn.execute("UPDATE leads SET has_booking_system = NULL WHERE (website IS NULL OR website = '') AND has_booking_system IS NOT NULL")
 
     ws_existing = {row["name"] for row in conn.execute("PRAGMA table_info(watched_searches)").fetchall()}
     if "radius_km" not in ws_existing:
@@ -135,18 +146,23 @@ def upsert_leads(leads: list) -> list:
             INSERT INTO leads (place_id, name, address, phone, website, email, instagram, owner_name, lead_source,
                 rating, rating_count,
                 business_status, open_now, opening_hours, category_query, region_query, likely_new,
-                opening_status, opening_date, competitor_system, pain_points, score, chain_flag, first_seen,
+                opening_status, opening_date, competitor_system, has_booking_system, booking_evidence,
+                pain_points, score, chain_flag, first_seen,
                 icp_score, icp_tier, status, notes)
             VALUES (:place_id, :name, :address, :phone, :website, :email, :instagram, :owner_name, :lead_source,
                 :rating, :rating_count,
                 :business_status, :open_now, :opening_hours, :category_query, :region_query, :likely_new,
-                :opening_status, :opening_date, :competitor_system, :pain_points, :score, :chain_flag, :first_seen,
+                :opening_status, :opening_date, :competitor_system, :has_booking_system, :booking_evidence,
+                :pain_points, :score, :chain_flag, :first_seen,
                 :icp_score, :icp_tier, :status, :notes)
         """, {**lead, "open_now": int(bool(lead.get("open_now"))), "likely_new": int(bool(lead.get("likely_new"))),
               "chain_flag": int(bool(lead.get("chain_flag"))), "icp_score": lead.get("icp_score", 0),
               "icp_tier": lead.get("icp_tier", ""), "status": lead.get("status", "Neu"),
               "notes": lead.get("notes", ""), "opening_status": lead.get("opening_status", "Etabliert"),
-              "opening_date": lead.get("opening_date", "")})
+              "opening_date": lead.get("opening_date", ""),
+              "has_booking_system": (None if lead.get("has_booking_system") is None
+                                      else int(bool(lead.get("has_booking_system")))),
+              "booking_evidence": lead.get("booking_evidence", "")})
         new_place_ids.append(lead["place_id"])
     conn.commit()
     conn.close()
@@ -287,7 +303,7 @@ def hide_leads_before(cutoff_date: str) -> list:
 
 
 RECHECK_FIELDS = ("competitor_system", "chain_flag", "icp_score", "icp_tier", "score", "email", "owner_name",
-                   "opening_hours", "instagram")
+                   "opening_hours", "instagram", "has_booking_system", "booking_evidence")
 
 
 def set_lead_fields(updates: list) -> None:

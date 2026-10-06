@@ -47,8 +47,17 @@
         <div class="info-card">
             <h4>Weitere Spalten</h4>
             <ul>
-                <li><strong>System</strong>: erkanntes Buchungssystem (z. B. Treatwell, Doctolib). "—" heißt: keins
-                    gefunden (+25 Punkte). Geprüft werden Startseite und maximal 5 Bewertungen. Im Filter steht hinter
+                <li><strong>Buchungssystem</strong> (direkt neben Name): "Ja", wenn <em>irgendein</em> Online-
+                    Buchungssystem erkannt wurde — entweder eine bekannte Marke (siehe "System" unten) oder, falls
+                    keine bekannte Marke zutrifft, ein externer Buchungslink bzw. eingebettetes Buchungs-Widget auf
+                    der Website oder in einer separat nachgeladenen Script-Datei (Mauszeiger auf "Ja" halten zeigt
+                    die Begründung). Das fängt auch unbekannte/seltene Systeme ab, die "System" nicht namentlich
+                    erkennt. <strong>"N/A"</strong> heißt: konnte nicht geprüft werden (keine Website oder Website
+                    nicht lesbar) — bewusst keine Verneinung, damit das beim Anrufen nicht wie eine sichere Aussage
+                    wirkt. Im Filter steht hinter "ja"/"nein"/"n/a" die Trefferzahl dieser Tabelle.</li>
+                <li><strong>System</strong>: erkanntes Buchungssystem (z. B. Treatwell, Doctolib). "—" heißt: keine
+                    bekannte Marke gefunden (+25 Punkte) — das schließt ein unbekanntes System nicht aus, siehe
+                    "Buchungssystem". Geprüft werden Startseite und maximal 5 Bewertungen. Im Filter steht hinter
                     jedem System, wie viele Leads dieser Tabelle es haben.</li>
                 <li><strong>Kette?</strong>: "Ja (3)" heißt: dieser Betrieb gehört zu einer Marke mit 3 bekannten Standorten
                     in deiner Datenbank. Erkannt an gleichem Markennamen oder gleicher Website (+15 Punkte).</li>
@@ -108,6 +117,17 @@
             <button id="{{ p }}ExportHubspot" title="Exportiert die Leads, die in dieser Tabelle gerade sichtbar sind">Export HubSpot</button>
         </div>
     </div>
+{% endmacro %}
+{% macro lead_table_head(p) %}
+    <thead>
+        <tr>
+            <th><input type="checkbox" id="{{ p }}SelectAll" title="Alle sichtbaren Zeilen auswählen"></th>
+            <th>Name</th><th>Buchungssystem</th><th>Adresse</th><th>Telefon</th><th>Instagram</th><th>E-Mail</th><th>Inhaber</th><th>Website</th><th>Google Profil</th><th>Öffnungszeiten</th>
+            <th>ICP-Score (%)</th><th>Tier</th><th>System</th><th># Reviews</th><th>Offen</th>
+            <th>Eröffnung</th><th>Kette?</th><th>Pain-Points</th><th>Status</th><th>Notiz</th>
+            <th>In DB seit</th><th>Lead-Quelle</th><th>HubSpot</th><th>Zugewiesen an</th>
+        </tr>
+    </thead>
 {% endmacro %}
 <div id="toast" class="toast hidden"></div>
 <header>
@@ -210,7 +230,7 @@
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="neuSelectAll" title="Alle sichtbaren Zeilen auswählen"></th>
-                        <th>Name</th><th>Adresse</th><th>Telefon</th><th>Instagram</th><th>E-Mail</th><th>Inhaber</th><th>Website</th><th>Google Profil</th><th>Öffnungszeiten</th>
+                        <th>Name</th><th>Buchungssystem</th><th>Adresse</th><th>Telefon</th><th>Instagram</th><th>E-Mail</th><th>Inhaber</th><th>Website</th><th>Google Profil</th><th>Öffnungszeiten</th>
                         <th>ICP-Score (%)</th><th>Tier</th><th>System</th><th># Reviews</th><th>Offen</th>
                         <th>Eröffnung</th><th>Kette?</th><th>Pain-Points</th><th>Status</th><th>Notiz</th>
                         <th>In DB seit</th><th>Lead-Quelle</th><th>HubSpot</th><th>Zugewiesen an</th>
@@ -240,6 +260,7 @@
                 <tr>
                     <th><input type="checkbox" id="altSelectAll" title="Alle sichtbaren Zeilen auswählen"></th>
                     <th>Name</th>
+                    <th>Buchungssystem</th>
                     <th>Adresse</th>
                     <th>Telefon</th>
                     <th>Instagram</th>
@@ -271,6 +292,32 @@
 </section>
 
 <section class="card">
+    <h2>👥 Nach Zuweisung</h2>
+    <p class="hint">Jede Person hat eine eigene Tabelle. Wird ein Lead in "Neu" oder "Alt" einer Person zugewiesen, wandert er
+        hierher; Zuweisung auf "–" zurücksetzen schickt ihn zurück. Der Export einer Personen-Tabelle enthält Name und Telefon,
+        heißt nach der Person und verschiebt die exportierten Leads nach "Exportiert / In HubSpot" (im Aktivitäts-Log
+        rückgängig machbar). "In HubSpot" verschiebt einen einzelnen Lead.</p>
+</section>
+
+{% for person in assignees %}
+{% set p = "person" ~ loop.index0 %}
+<section class="card" data-assignee="{{ person }}" data-key="{{ p }}">
+    <details class="table-section" open>
+        <summary><h2>👤 {{ person }} <span id="{{ p }}Count"></span></h2></summary>
+        {{ table_toolbar(p) }}
+        {{ bulk_assign_bar(p) }}
+        <input type="text" class="table-search" id="{{ p }}Search" placeholder="🔎 Suche in Name, Adresse, Telefon, Notiz, Pain-Points, ...">
+        <div class="table-wrap">
+            <table class="leads-table" id="{{ p }}Table">
+                {{ lead_table_head(p) }}
+                <tbody id="{{ p }}Body"></tbody>
+            </table>
+        </div>
+    </details>
+</section>
+{% endfor %}
+
+<section class="card">
     <details class="table-section">
         <summary><h2>📤 Exportiert / In HubSpot <span id="exportedCount"></span></h2></summary>
         <p class="hint">Leads, die exportiert wurden (automatisch) oder per "In HubSpot"-Button markiert wurden.
@@ -283,7 +330,7 @@
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="exportedSelectAll" title="Alle sichtbaren Zeilen auswählen"></th>
-                        <th>Name</th><th>Adresse</th><th>Telefon</th><th>Instagram</th><th>E-Mail</th><th>Inhaber</th><th>Website</th><th>Google Profil</th><th>Öffnungszeiten</th>
+                        <th>Name</th><th>Buchungssystem</th><th>Adresse</th><th>Telefon</th><th>Instagram</th><th>E-Mail</th><th>Inhaber</th><th>Website</th><th>Google Profil</th><th>Öffnungszeiten</th>
                         <th>ICP-Score (%)</th><th>Tier</th><th>System</th><th># Reviews</th><th>Offen</th>
                         <th>Eröffnung</th><th>Kette?</th><th>Pain-Points</th><th>Status</th><th>Notiz</th>
                         <th>In DB seit</th><th>Lead-Quelle</th><th>HubSpot</th><th>Zugewiesen an</th>

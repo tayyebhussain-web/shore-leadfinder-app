@@ -136,6 +136,8 @@ a { color: #1a1a2e; }
 .checkbox-cell, th:has(> input[type="checkbox"]) { text-align: center; }
 .checkbox-cell input, th input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
 
+.booking-na { color: #999; font-style: italic; }
+
 .toast {
     position: fixed;
     top: 16px;

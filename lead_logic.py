@@ -71,6 +71,32 @@ COMPETITOR_SIGNATURES = {
     "Clickdoc": ["clickdoc.de"],
     "Doctena": ["doctena.com", "doctena.de", "doctena.lu"],
     "Dentolo": ["dentolo.de"],
+    # Weitere international verbreitete Terminbuchungs-Anbieter, die in DACH-Branchen (Beauty/Wellness/
+    # Medical) vorkommen, aber bisher in den eigenen Daten noch nicht beobachtet wurden - ergaenzt, um die
+    # Erkennungsrate bei bislang unerkannten Systemen zu erhoehen.
+    "SimplyBook.me": ["simplybook.me"],
+    "Acuity Scheduling": ["acuityscheduling.com", "squarespacescheduling.com"],
+    "Setmore": ["setmore.com"],
+    "Square Appointments": ["squareup.com/appointments", "book.squareup.com", "square.site"],
+    "Picktime": ["picktime.com"],
+    "10to8": ["10to8.com"],
+    "YouCanBook.me": ["youcanbook.me"],
+    "Schedulicity": ["schedulicity.com"],
+    "Eversports": ["eversports.de", "eversports.com", "eversports.at"],
+    "Shedul": ["shedul.com"],
+    "Mindbody": ["mindbodyonline.com", "mindbody.io"],
+    "Zenoti": ["zenoti.com"],
+    "Boulevard": ["joinblvd.com"],
+    "GlossGenius": ["glossgenius.com"],
+    "Cliniko": ["cliniko.com"],
+    "Nookal": ["nookal.com"],
+    "Bokadirekt": ["bokadirekt.se"],
+    "Patientus": ["patientus.de"],
+    "TeleClinic": ["teleclinic.com"],
+    # Live an echten Leads entdeckt (White Silhouette Brautmoden -> BridalLive, Dental21 -> Availy): beide
+    # waren vorher unerkannt, weil sie kein "klassisches" Buchungssystem-Wording benutzen.
+    "BridalLive": ["bridallive.com"],
+    "Availy": ["availy-root", "availy.io", "availy.de"],
     # Echte Shore-Buchungsadresse: connect.shore.com/bookings/<name>/services
     "Shore (bereits Kunde)": ["connect.shore.com", "shore.com/bookings"],
 }
@@ -180,7 +206,8 @@ def format_opening_date(opening_date: dict) -> str:
 
 
 def compute_icp_score(category: str, rating_count: int, competitor: str,
-                       chain_flag: bool, pain_points: list, opening_status: str = "Etabliert") -> tuple:
+                       chain_flag: bool, pain_points: list, opening_status: str = "Etabliert",
+                       has_booking_system: bool = None) -> tuple:
     """Gibt (score 0-100, tier 'A'/'B'/'C') zurueck.
 
     Zusammensetzung:
@@ -190,11 +217,17 @@ def compute_icp_score(category: str, rating_count: int, competitor: str,
       - Filialkette (3-9)      bis 15 Punkte (mehr MRR-Potenzial pro Deal)
       - Review-Pain-Point      bis 10 Punkte (konkreter Anruf-Aufhaenger)
       - Bald eröffnend/Neu     bis 20 Punkte (garantiert/vermutlich noch kein Buchungssystem)
+
+    has_booking_system: ob IRGENDEIN Buchungssystem erkannt wurde (bekannte Marke ODER generischer Fallback-
+    Treffer, siehe detect_generic_booking_signal) - nicht nur ein namentlich bekanntes System wie `competitor`.
+    Faellt auf bool(competitor) zurueck, wenn nicht angegeben (Abwaertskompatibilitaet).
     """
+    if has_booking_system is None:
+        has_booking_system = bool(competitor)
     score = 0
     score += CATEGORY_WEIGHTS.get(category, DEFAULT_CATEGORY_WEIGHT)
 
-    if not competitor:
+    if not has_booking_system:
         score += 25
 
     if rating_count >= 20:
@@ -347,6 +380,93 @@ def detect_competitor(website: str, website_html: str, review_texts: list) -> st
     found = [system for system, signatures in COMPETITOR_SIGNATURES.items()
              if any(sig in combined for sig in signatures)]
     return ", ".join(found)
+
+
+# Fallback fuer Buchungssysteme, die (noch) nicht in COMPETITOR_SIGNATURES stehen: statt eine Marke zu
+# erkennen, wird nach dem allgemeinen MUSTER eines Online-Buchungs-Einstiegs gesucht - einem eingebetteten
+# iframe oder einem Link, der auf eine FREMDE Domain (nicht die eigene Website) fuehrt und dabei Buchungs-
+# Vokabular im Linktext oder in der URL traegt. Interne Links (z.B. eine eigene "/termin"-Kontaktseite ohne
+# echtes Buchungstool) zaehlen bewusst NICHT, um Fehlalarme zu vermeiden. Das ist eine grobe Heuristik, kein
+# Beweis - daher als eigenes Signal getrennt von COMPETITOR_SIGNATURES, mit kurzer Begruendung statt Markenname.
+_GENERIC_BOOKING_KEYWORD_RE = re.compile(
+    r"\b(buchen|buchung|book|booking|termin|appointment|schedul\w*|reserv\w*)\b", re.I)
+# Fremddomains, die haeufig verlinkt sind, aber keine Buchungssysteme sind (Social Media, Karten, Verzeichnisse,
+# Messenger) - manche enthalten zufaellig ein Buchungs-Schluesselwort als Teilstring (z.B. "facebook" -> "book").
+GENERIC_BOOKING_DOMAIN_DENYLIST = {
+    "facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com", "tiktok.com", "youtube.com",
+    "youtu.be", "pinterest.com", "wa.me", "whatsapp.com", "google.com", "goo.gl", "g.page", "apple.com",
+    "maps.google.com", "maps.apple.com", "yelp.com", "tripadvisor.com", "xing.com", "snapchat.com",
+}
+
+
+def _registrable_domain(url: str) -> str:
+    return re.sub(r"^www\.", "", urlparse(url if "//" in (url or "") else "//" + (url or "")).netloc.lower())
+
+
+def _is_foreign_booking_domain(domain: str, own_domain: str) -> bool:
+    return bool(domain) and domain != own_domain and not any(
+        domain == d or domain.endswith("." + d) for d in GENERIC_BOOKING_DOMAIN_DENYLIST)
+
+
+def detect_generic_booking_signal(website: str, website_html: str) -> str:
+    """Findet ein eingebettetes Buchungs-Widget (iframe) oder einen externen Buchungslink, dessen System
+    nicht in COMPETITOR_SIGNATURES bekannt ist. Gibt eine kurze Begruendung zurueck oder "" bei keinem Treffer."""
+    if not website_html:
+        return ""
+    own_domain = _registrable_domain(website)
+
+    for m in re.finditer(r'<iframe\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', website_html, re.I):
+        src = m.group(1)
+        # urljoin loest relative Pfade (z.B. "/booking") gegen die eigene Website auf, statt sie faelschlich
+        # als eigenstaendigen Host zu lesen - sonst wuerde z.B. ein relativer Link "booking.html" wie eine
+        # fremde Domain "booking.html" aussehen.
+        domain = _registrable_domain(urljoin(website or "", src))
+        if _is_foreign_booking_domain(domain, own_domain) and _GENERIC_BOOKING_KEYWORD_RE.search(src):
+            return f"Eingebettetes Buchungs-Widget ({domain})"
+
+    for m in re.finditer(r'<a\b(?:[^>]*?)href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+                          website_html, re.I | re.S):
+        href, inner = m.group(1), m.group(2)
+        if re.match(r"(mailto|tel|javascript|#)", href.strip(), re.I):
+            continue
+        domain = _registrable_domain(urljoin(website or "", href))
+        if not _is_foreign_booking_domain(domain, own_domain):
+            continue
+        text = re.sub(r"<[^>]+>|\s+", " ", inner).strip()
+        if _GENERIC_BOOKING_KEYWORD_RE.search(f"{text} {href}"):
+            return f"Externer Buchungslink ({domain})"
+    return ""
+
+
+def detect_booking_in_scripts(website: str, website_html: str) -> tuple:
+    """Manche Buchungs-Widgets stehen gar nicht in der Haupt-HTML, sondern werden erst durch eine eigene,
+    separat eingebundene JS-Datei geladen (z.B. "kl-termin.js", das per JS ein iframe mit der echten
+    Buchungs-Adresse einfuegt - live bei White Silhouette Brautmoden/BridalLive entdeckt). Nur Script-Dateien,
+    deren Pfad SELBST ein Buchungs-Schluesselwort enthaelt, werden dafuer zusaetzlich geladen (max. 4) - das
+    haelt die Zahl der Anfragen klein, statt jedes Analytics-/Vendor-Skript jeder Website abzurufen.
+    Gibt (bekanntes_system_oder_leer, begruendung_oder_leer) zurueck."""
+    if not website_html:
+        return "", ""
+    own_domain = _registrable_domain(website)
+    candidates = []
+    for m in re.finditer(r'<script\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', website_html, re.I):
+        src = m.group(1)
+        if _GENERIC_BOOKING_KEYWORD_RE.search(src):
+            candidates.append(urljoin(website or "", src))
+
+    for url in candidates[:4]:
+        content = fetch_website_html(url)
+        if not content:
+            continue
+        low = content.lower()
+        known = [system for system, sigs in COMPETITOR_SIGNATURES.items() if any(sig in low for sig in sigs)]
+        if known:
+            return ", ".join(known), ""
+        for um in re.finditer(r'https?://[a-zA-Z0-9.\-]+', content):
+            domain = _registrable_domain(um.group(0))
+            if _is_foreign_booking_domain(domain, own_domain):
+                return "", f"Buchungs-Skript laedt externe Domain ({domain})"
+    return "", ""
 
 
 def merge_systems(old: str, new: str) -> str:
@@ -533,10 +653,13 @@ def detect_owner_name(business_name: str, impressum_html: str) -> str:
     return ""
 
 
-def compute_score(competitor: str, likely_new: bool) -> str:
-    if not competitor and likely_new:
+def compute_score(competitor: str, likely_new: bool, has_booking_system: bool = None) -> str:
+    """has_booking_system: siehe compute_icp_score - faellt auf bool(competitor) zurueck, wenn nicht angegeben."""
+    if has_booking_system is None:
+        has_booking_system = bool(competitor)
+    if not has_booking_system and likely_new:
         return "Heiss"
-    if not competitor:
+    if not has_booking_system:
         return "Mittel"
     return "Niedrig"
 
@@ -666,13 +789,27 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
     opening_status = detect_opening_status(business_status, rating_count)
     opening_date = format_opening_date(place.get("openingDate"))
     competitor = detect_competitor(website, website_html, review_texts)
+    if not competitor and website_html:
+        script_system, script_evidence = detect_booking_in_scripts(website, website_html)
+        competitor = script_system
+    else:
+        script_evidence = ""
+    booking_evidence = "" if competitor else (script_evidence or detect_generic_booking_signal(website, website_html))
+    # None = konnte nicht geprueft werden (keine Website oder Website nicht lesbar) - bewusst nicht "Nein",
+    # damit beim Anrufen nicht faelschlich der Eindruck entsteht, es sei sicher geprueft und verneint worden.
+    if not website or not website_html:
+        has_booking_system = None
+    else:
+        has_booking_system = bool(competitor) or bool(booking_evidence)
     pain_points = detect_pain_points(review_texts)
     email = detect_email(website, website_html)
     instagram = detect_instagram(website, website_html)
     impressum_url = find_impressum_url(website, website_html) if website_html else ""
     impressum_html = fetch_website_html(impressum_url) if impressum_url else ""
     owner_name = detect_owner_name(name, impressum_html)
-    score = compute_score(competitor, likely_new)
+    # Fuer die Bewertung zaehlt "unbekannt" (None) wie "hat eines" - sonst wuerde ein Lead ohne lesbare
+    # Website faelschlich den Nicht-Konkurrenz-Bonus bekommen, nur weil er gar nicht geprueft werden konnte.
+    score = compute_score(competitor, likely_new, True if has_booking_system is None else has_booking_system)
 
     return {
         "place_id": place_id,
@@ -682,6 +819,8 @@ def enrich_place(api_key: str, place: dict, region: str, category: str) -> dict:
         "website": website,
         "email": email,
         "instagram": instagram,
+        "has_booking_system": None if has_booking_system is None else int(has_booking_system),
+        "booking_evidence": booking_evidence,
         "owner_name": owner_name,
         "lead_source": LEAD_SOURCE_GOOGLE,
         "rating": place.get("rating"),
@@ -719,6 +858,8 @@ def finalize_leads(leads: list, known: list = None) -> None:
             chain_flag=lead.get("chain_flag", False),
             pain_points=pain_points,
             opening_status=lead.get("opening_status", "Etabliert"),
+            # None (nicht pruefbar) zaehlt fuer die Bewertung wie "hat eines" - kein Bonus ohne Bestaetigung
+            has_booking_system=True if lead.get("has_booking_system") is None else bool(lead.get("has_booking_system")),
         )
         lead["icp_score"] = icp_score
         lead["icp_tier"] = icp_tier

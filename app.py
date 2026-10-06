@@ -11,6 +11,7 @@ Siehe README.md fuer die einmalige Google-API-Key-Einrichtung.
 """
 
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -22,6 +23,10 @@ import lead_logic
 
 app = Flask(__name__)
 db.init_db()
+
+# Personen, denen Leads zugewiesen werden koennen. Jede bekommt in der Oberflaeche eine eigene Tabelle
+# ("Nach Zuweisung"). Muss zu ASSIGNEES in static/app.js passen.
+ASSIGNEES = ["David", "Özi", "Tayo"]
 
 
 def get_api_key():
@@ -41,7 +46,7 @@ def annotate_chains(rows):
 
 @app.route("/")
 def index():
-    return render_template("index.html", categories=lead_logic.ICP_CATEGORIES,
+    return render_template("index.html", categories=lead_logic.ICP_CATEGORIES, assignees=ASSIGNEES,
                             has_env_key=bool(os.environ.get("GOOGLE_MAPS_API_KEY")))
 
 
@@ -219,9 +224,10 @@ def api_hide_before():
 def api_recheck():
     """Liest die Website aller Leads erneut (ohne Google-Aufrufe), ergaenzt erkannte Systeme in der Spalte
     'System', eine Kontakt-E-Mail, ein verlinktes Instagram-Profil und einen Inhaber-/Ansprechpartner-Namen
-    (aus dem Impressum, falls noch keine/keiner vorhanden), bestimmt die Ketten neu und berechnet den Score
-    neu. Bereits erkannte Systeme/E-Mails/Namen bleiben erhalten, Status/Notizen/Ausgeblendet bleiben
-    unberuehrt. Undo-faehig."""
+    (aus dem Impressum, falls noch keine/keiner vorhanden), bestimmt per Fallback-Heuristik (externer
+    Buchungslink/eingebettetes Widget) auch ein Buchungssystem ohne bekannten Markennamen ('Buchungssystem'
+    Ja/Nein), bestimmt die Ketten neu und berechnet den Score neu. Bereits erkannte Systeme/E-Mails/Namen
+    bleiben erhalten, Status/Notizen/Ausgeblendet bleiben unberuehrt. Undo-faehig."""
     all_leads = db.get_all_leads(include_hidden=True)
     with_site = [l for l in all_leads if l.get("website")]
 
@@ -244,6 +250,12 @@ def api_recheck():
         old_systems = lead.get("competitor_system") or ""
         systems = (lead_logic.merge_systems(old_systems, lead_logic.detect_competitor(lead["website"], html, []))
                    if html else old_systems)
+        if not systems and html:
+            # Manche Buchungs-Widgets stehen nur in einer separat geladenen JS-Datei (z.B. BridalLive bei
+            # White Silhouette Brautmoden), nicht in der Haupt-HTML selbst.
+            script_system, _ = lead_logic.detect_booking_in_scripts(lead["website"], html)
+            if script_system:
+                systems = lead_logic.merge_systems(old_systems, script_system)
         chain = int(chain_counts.get(lead["place_id"], 1) >= 2)
         old_email = lead.get("email") or ""
         email = old_email or (lead_logic.detect_email(lead["website"], html) if html else "")
@@ -251,16 +263,26 @@ def api_recheck():
         instagram = old_instagram or (lead_logic.detect_instagram(lead["website"], html) if html else "")
         old_owner = lead.get("owner_name") or ""
         owner_name = old_owner or lead_logic.detect_owner_name(lead["name"], impressum_html_by_id.get(lead["place_id"], ""))
+        old_booking_evidence = lead.get("booking_evidence") or ""
+        if systems:
+            booking_evidence = ""
+        else:
+            booking_evidence = old_booking_evidence or (lead_logic.detect_generic_booking_signal(lead["website"], html) if html else "")
+        has_booking = bool(systems) or bool(booking_evidence) or bool(lead.get("has_booking_system"))
+        old_has_booking = bool(lead.get("has_booking_system"))
         if (systems == old_systems and chain == int(bool(lead.get("chain_flag")))
-                and email == old_email and instagram == old_instagram and owner_name == old_owner):
+                and email == old_email and instagram == old_instagram and owner_name == old_owner
+                and has_booking == old_has_booking and booking_evidence == old_booking_evidence):
             continue
         pain_points = [p for p in (lead.get("pain_points") or "").split(", ") if p]
         icp_score, icp_tier = lead_logic.compute_icp_score(
             category=lead["category_query"], rating_count=lead.get("rating_count") or 0, competitor=systems,
-            chain_flag=bool(chain), pain_points=pain_points, opening_status=lead.get("opening_status") or "Etabliert")
+            chain_flag=bool(chain), pain_points=pain_points, opening_status=lead.get("opening_status") or "Etabliert",
+            has_booking_system=has_booking)
         fields = {"competitor_system": systems, "chain_flag": chain, "icp_score": icp_score, "icp_tier": icp_tier,
-                  "score": lead_logic.compute_score(systems, bool(lead.get("likely_new"))), "email": email,
-                  "instagram": instagram, "owner_name": owner_name}
+                  "score": lead_logic.compute_score(systems, bool(lead.get("likely_new")), has_booking), "email": email,
+                  "instagram": instagram, "owner_name": owner_name,
+                  "has_booking_system": int(has_booking), "booking_evidence": booking_evidence}
         previous.append({"place_id": lead["place_id"], "previous": {k: lead.get(k) for k in fields}})
         updates.append((lead["place_id"], fields))
 
@@ -332,24 +354,29 @@ def api_export():
     if not rows:
         return jsonify({"error": "Keine exportierbaren Leads uebergeben."}), 400
 
+    # Export aus einer Personen-Tabelle ("Nach Zuweisung"): Datei heisst nach der Person. Wie jeder Export
+    # wandern die Leads danach nach "Exportiert".
+    person = re.sub(r"[^A-Za-z0-9ÄÖÜäöüß_-]", "", request.form.get("person") or "")
+    base_name = f"leads_{person}" if person else "leads"
     previous = db.hide_leads([r["place_id"] for r in rows])
     if previous:
-        db.log_action("export", f"{len(previous)} Leads als {fmt.upper()} exportiert und ausgeblendet",
+        von = f" von {person}" if person else ""
+        db.log_action("export", f"{len(previous)} Leads{von} als {fmt.upper()} exportiert und ausgeblendet",
                        payload=previous, undoable=True)
 
     if fmt == "xlsx":
         data = exports.rows_to_xlsx_bytes(rows)
         return send_file(io.BytesIO(data), as_attachment=True,
-                          download_name=exports.timestamped("leads", "xlsx"),
+                          download_name=exports.timestamped(base_name, "xlsx"),
                           mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if fmt == "hubspot":
         data = exports.rows_to_hubspot_csv_bytes(rows)
         return send_file(io.BytesIO(data), as_attachment=True,
-                          download_name=exports.timestamped("leads_hubspot", "csv"), mimetype="text/csv")
+                          download_name=exports.timestamped(base_name + "_hubspot", "csv"), mimetype="text/csv")
 
     data = exports.rows_to_csv_bytes(rows)
     return send_file(io.BytesIO(data), as_attachment=True,
-                      download_name=exports.timestamped("leads", "csv"), mimetype="text/csv")
+                      download_name=exports.timestamped(base_name, "csv"), mimetype="text/csv")
 
 
 if __name__ == "__main__":
